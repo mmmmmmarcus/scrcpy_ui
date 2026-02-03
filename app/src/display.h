@@ -61,4 +61,7 @@ enum sc_display_result
 sc_display_render(struct sc_display *display, const SDL_Rect *geometry,
                   enum sc_orientation orientation);
 
+void
+sc_display_present(struct sc_display *display);
+
 #endif

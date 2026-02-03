@@ -86,6 +86,7 @@ else
         'src/sys/unix/process.c',
     ]
     if host_machine.system() == 'darwin'
+        src += [ 'src/sys/darwin/clipboard.m' ]
         conf.set('_DARWIN_C_SOURCE', true)
     endif
 endif
@@ -131,6 +132,8 @@ endif
 if host_machine.system() == 'windows'
     dependencies += cc.find_library('mingw32')
     dependencies += cc.find_library('ws2_32')
+elif host_machine.system() == 'darwin'
+    dependencies += dependency('appleframeworks', modules: ['AppKit'])
 endif
 
 check_functions = [

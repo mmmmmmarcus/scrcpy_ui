@@ -22,6 +22,15 @@
 #include "trait/frame_sink.h"
 #include "trait/mouse_processor.h"
 
+struct sc_file_pusher;
+
+enum sc_screen_connection_state {
+    SC_SCREEN_CONNECTION_CONNECTING,
+    SC_SCREEN_CONNECTION_RUNNING,
+    SC_SCREEN_CONNECTION_DISCONNECTED,
+    SC_SCREEN_CONNECTION_FAILED,
+};
+
 struct sc_screen {
     struct sc_frame_sink frame_sink; // frame sink trait
 
@@ -60,6 +69,11 @@ struct sc_screen {
     enum sc_orientation orientation;
     // rectangle of the content (excluding black borders)
     struct SDL_Rect rect;
+    struct SDL_Rect panel_rect;
+    struct SDL_Rect screenshot_button_rect;
+    bool screenshot_button_hovered;
+    bool screenshot_button_pressed;
+    enum sc_screen_connection_state connection_state;
     bool has_frame;
     bool fullscreen;
     bool maximized;
@@ -102,7 +116,7 @@ struct sc_screen_params {
     bool start_fps_counter;
 };
 
-// initialize screen, create window, renderer and texture (window is hidden)
+// initialize screen, create window, renderer and texture
 bool
 sc_screen_init(struct sc_screen *screen, const struct sc_screen_params *params);
 
@@ -146,6 +160,21 @@ sc_screen_set_orientation(struct sc_screen *screen,
 // set the display pause state
 void
 sc_screen_set_paused(struct sc_screen *screen, bool paused);
+
+void
+sc_screen_set_connection_state(struct sc_screen *screen,
+                               enum sc_screen_connection_state state);
+
+void
+sc_screen_set_input_processors(struct sc_screen *screen,
+                               struct sc_controller *controller,
+                               struct sc_file_pusher *fp,
+                               struct sc_key_processor *kp,
+                               struct sc_mouse_processor *mp,
+                               struct sc_gamepad_processor *gp);
+
+void
+sc_screen_set_window_title(struct sc_screen *screen, const char *title);
 
 // react to SDL events
 // If this function returns false, scrcpy must exit with an error.

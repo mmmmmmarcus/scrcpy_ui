@@ -48,6 +48,24 @@ sc_input_manager_init(struct sc_input_manager *im,
     im->next_sequence = 1; // 0 is reserved for SC_SEQUENCE_INVALID
 }
 
+void
+sc_input_manager_configure(struct sc_input_manager *im,
+                           struct sc_controller *controller,
+                           struct sc_file_pusher *fp,
+                           struct sc_key_processor *kp,
+                           struct sc_mouse_processor *mp,
+                           struct sc_gamepad_processor *gp) {
+    // A key/mouse/gamepad processor may not be present if there is no
+    // controller.
+    assert((!kp && !mp && !gp) || controller);
+
+    im->controller = controller;
+    im->fp = fp;
+    im->kp = kp;
+    im->mp = mp;
+    im->gp = gp;
+}
+
 static void
 send_keycode(struct sc_input_manager *im, enum android_keycode keycode,
              enum sc_action action, const char *name) {

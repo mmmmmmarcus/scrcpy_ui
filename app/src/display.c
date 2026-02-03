@@ -346,6 +346,10 @@ sc_display_render(struct sc_display *display, const SDL_Rect *geometry,
         }
     }
 
-    SDL_RenderPresent(display->renderer);
     return SC_DISPLAY_RESULT_OK;
+}
+
+void
+sc_display_present(struct sc_display *display) {
+    SDL_RenderPresent(display->renderer);
 }

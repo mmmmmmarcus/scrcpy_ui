@@ -65,6 +65,14 @@ sc_input_manager_init(struct sc_input_manager *im,
                       const struct sc_input_manager_params *params);
 
 void
+sc_input_manager_configure(struct sc_input_manager *im,
+                           struct sc_controller *controller,
+                           struct sc_file_pusher *fp,
+                           struct sc_key_processor *kp,
+                           struct sc_mouse_processor *mp,
+                           struct sc_gamepad_processor *gp);
+
+void
 sc_input_manager_handle_event(struct sc_input_manager *im,
                               const SDL_Event *event);
 

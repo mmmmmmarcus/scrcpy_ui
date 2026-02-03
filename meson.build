@@ -9,6 +9,10 @@ project('scrcpy', 'c',
 
 add_project_arguments('-Wmissing-prototypes', language: 'c')
 
+if host_machine.system() == 'darwin'
+    add_languages('objc')
+endif
+
 if get_option('compile_app')
     subdir('app')
 endif
