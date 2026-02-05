@@ -81,6 +81,9 @@ struct sc_screen {
     SDL_Texture *screenshot_icon;
     uint16_t screenshot_icon_width;
     uint16_t screenshot_icon_height;
+    SDL_Texture *screenshot_check_icon;
+    uint16_t screenshot_check_icon_width;
+    uint16_t screenshot_check_icon_height;
     SDL_Texture *input_toggle_icon;
     uint16_t input_toggle_icon_width;
     uint16_t input_toggle_icon_height;
@@ -89,8 +92,9 @@ struct sc_screen {
     bool input_toggle_button_hovered;
     bool input_toggle_button_pressed;
     bool input_enabled;
-    bool screenshot_button_flash_active;
-    uint32_t screenshot_button_flash_start_ms;
+    bool screenshot_button_feedback_active;
+    uint32_t screenshot_button_feedback_start_ms;
+    float screenshot_button_feedback_progress;
     enum sc_screen_connection_state connection_state;
     bool has_frame;
     bool fullscreen;

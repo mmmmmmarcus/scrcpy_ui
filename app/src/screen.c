@@ -28,9 +28,15 @@
 #define UI_TOGGLE_BUTTON_SIZE 40
 #define UI_TOGGLE_TOP_OFFSET 20
 #define UI_BUTTON_ICON_SIZE 24
-#define UI_BUTTON_FLASH_DURATION_MS 800
+#define UI_BUTTON_FEEDBACK_IN_MS 150
+#define UI_BUTTON_FEEDBACK_HOLD_MS 1000
+#define UI_BUTTON_FEEDBACK_OUT_MS 150
+#define UI_BUTTON_FEEDBACK_DURATION_MS \
+    (UI_BUTTON_FEEDBACK_IN_MS + UI_BUTTON_FEEDBACK_HOLD_MS \
+     + UI_BUTTON_FEEDBACK_OUT_MS)
 #define UI_WAITING_LABEL "PLEASE CONNECT A DEVICE"
 #define UI_SCREENSHOT_ICON_PATH_ENV "SCRCPY_SCREENSHOT_ICON_PATH"
+#define UI_SCREENSHOT_CHECK_ICON_PATH_ENV "SCRCPY_SCREENSHOT_CHECK_ICON_PATH"
 #define UI_SCREENSHOT_BUTTON_BG_PATH_ENV "SCRCPY_SCREENSHOT_BUTTON_BG_PATH"
 #define UI_INPUT_TOGGLE_ICON_PATH_ENV "SCRCPY_INPUT_TOGGLE_ICON_PATH"
 #define UI_INPUT_TOGGLE_BUTTON_BG_PATH_ENV "SCRCPY_INPUT_TOGGLE_BUTTON_BG_PATH"
@@ -46,6 +52,9 @@ sc_screen_draw_text_centered(SDL_Renderer *renderer, const SDL_Rect *area,
 
 static bool
 sc_screen_load_screenshot_icon(struct sc_screen *screen);
+
+static bool
+sc_screen_load_screenshot_check_icon(struct sc_screen *screen);
 
 static bool
 sc_screen_load_screenshot_button_bg(struct sc_screen *screen);
@@ -383,6 +392,35 @@ sc_screen_load_screenshot_icon(struct sc_screen *screen) {
 }
 
 static bool
+sc_screen_load_screenshot_check_icon(struct sc_screen *screen) {
+    const char *path = getenv(UI_SCREENSHOT_CHECK_ICON_PATH_ENV);
+    if (!path || !*path) {
+        return true;
+    }
+
+    SDL_Surface *surface = scrcpy_icon_load_from_path(path);
+    if (!surface) {
+        LOGW("Could not load screenshot check icon: %s", path);
+        return false;
+    }
+
+    SDL_Texture *texture =
+        SDL_CreateTextureFromSurface(screen->display.renderer, surface);
+    if (!texture) {
+        LOGW("Could not create screenshot check icon texture: %s",
+             SDL_GetError());
+        scrcpy_icon_destroy(surface);
+        return false;
+    }
+
+    screen->screenshot_check_icon = texture;
+    screen->screenshot_check_icon_width = surface->w;
+    screen->screenshot_check_icon_height = surface->h;
+    scrcpy_icon_destroy(surface);
+    return true;
+}
+
+static bool
 sc_screen_load_screenshot_button_bg(struct sc_screen *screen) {
     const char *path = getenv(UI_SCREENSHOT_BUTTON_BG_PATH_ENV);
     if (!path || !*path) {
@@ -626,13 +664,8 @@ sc_screen_draw_text_centered(SDL_Renderer *renderer, const SDL_Rect *area,
     }
 }
 
-static void
-sc_screen_draw_button_icon(struct sc_screen *screen, const SDL_Rect *button,
-                           bool enabled) {
-    if (!screen->screenshot_icon) {
-        return;
-    }
-
+static SDL_Rect
+sc_screen_get_icon_rect(struct sc_screen *screen, const SDL_Rect *button) {
     int icon_w = scale_window_to_drawable(screen, UI_BUTTON_ICON_SIZE, true);
     int icon_h = scale_window_to_drawable(screen, UI_BUTTON_ICON_SIZE, false);
     int available_w = MAX(1, button->w - button->w / 3);
@@ -640,20 +673,91 @@ sc_screen_draw_button_icon(struct sc_screen *screen, const SDL_Rect *button,
     icon_w = MIN(icon_w, available_w);
     icon_h = MIN(icon_h, available_h);
     if (!icon_w || !icon_h) {
-        return;
+        return (SDL_Rect) {0, 0, 0, 0};
     }
-
-    SDL_Rect dst = {
+    return (SDL_Rect) {
         .x = button->x + (button->w - icon_w) / 2,
         .y = button->y + (button->h - icon_h) / 2,
         .w = icon_w,
         .h = icon_h,
     };
+}
 
-    (void) enabled;
+static float
+sc_ease_cubic_0_04_04_1(float x) {
+    // cubic-bezier(0, 0.4, 0.4, 1)
+    // Solve t from x(t), then return y(t).
+    float lo = 0.0f;
+    float hi = 1.0f;
+    float t = x;
+    for (int i = 0; i < 12; ++i) {
+        t = (lo + hi) * 0.5f;
+        float omt = 1.0f - t;
+        float xt = 3.0f * omt * t * t * 0.4f + t * t * t;
+        if (xt < x) {
+            lo = t;
+        } else {
+            hi = t;
+        }
+    }
+
+    float omt = 1.0f - t;
+    float yt = 3.0f * omt * omt * t * 0.4f + 3.0f * omt * t * t + t * t * t;
+    return CLAMP(yt, 0.0f, 1.0f);
+}
+
+static float
+sc_screen_get_screenshot_button_feedback_progress(struct sc_screen *screen) {
+    if (!screen->screenshot_button_feedback_active) {
+        return screen->screenshot_button_feedback_progress;
+    }
+
+    uint32_t now = SDL_GetTicks();
+    uint32_t elapsed = now - screen->screenshot_button_feedback_start_ms;
+    if (elapsed >= UI_BUTTON_FEEDBACK_DURATION_MS) {
+        return 0.0f;
+    }
+
+    if (elapsed < UI_BUTTON_FEEDBACK_IN_MS) {
+        float phase = (float) elapsed / UI_BUTTON_FEEDBACK_IN_MS;
+        return sc_ease_cubic_0_04_04_1(phase);
+    }
+
+    if (elapsed < UI_BUTTON_FEEDBACK_IN_MS + UI_BUTTON_FEEDBACK_HOLD_MS) {
+        return 1.0f;
+    }
+
+    uint32_t out_elapsed =
+        elapsed - UI_BUTTON_FEEDBACK_IN_MS - UI_BUTTON_FEEDBACK_HOLD_MS;
+    float phase = (float) out_elapsed / UI_BUTTON_FEEDBACK_OUT_MS;
+    return 1.0f - sc_ease_cubic_0_04_04_1(phase);
+}
+
+static void
+sc_screen_draw_button_icon(struct sc_screen *screen, const SDL_Rect *button) {
+    if (!screen->screenshot_icon) {
+        return;
+    }
+
+    SDL_Rect dst = sc_screen_get_icon_rect(screen, button);
+    if (!dst.w || !dst.h) {
+        return;
+    }
+
+    float progress = sc_screen_get_screenshot_button_feedback_progress(screen);
+    uint8_t camera_alpha = (uint8_t) ((1.0f - progress) * 255.0f);
+    uint8_t check_alpha = (uint8_t) (progress * 255.0f);
+
     SDL_SetTextureColorMod(screen->screenshot_icon, 40, 40, 48);
-    SDL_RenderCopy(screen->display.renderer, screen->screenshot_icon, NULL,
-                   &dst);
+    SDL_SetTextureAlphaMod(screen->screenshot_icon, camera_alpha);
+    SDL_RenderCopy(screen->display.renderer, screen->screenshot_icon, NULL, &dst);
+
+    if (screen->screenshot_check_icon && check_alpha) {
+        SDL_SetTextureColorMod(screen->screenshot_check_icon, 40, 40, 48);
+        SDL_SetTextureAlphaMod(screen->screenshot_check_icon, check_alpha);
+        SDL_RenderCopy(screen->display.renderer, screen->screenshot_check_icon,
+                       NULL, &dst);
+    }
 }
 
 static void
@@ -682,27 +786,9 @@ sc_screen_draw_toggle_icon(struct sc_screen *screen, const SDL_Rect *button) {
                    &dst);
 }
 
-static float
-sc_screen_get_screenshot_button_flash_intensity(struct sc_screen *screen) {
-    if (!screen->screenshot_button_flash_active) {
-        return 0.0f;
-    }
-
-    uint32_t now = SDL_GetTicks();
-    uint32_t elapsed = now - screen->screenshot_button_flash_start_ms;
-    if (elapsed >= UI_BUTTON_FLASH_DURATION_MS) {
-        screen->screenshot_button_flash_active = false;
-        return 0.0f;
-    }
-
-    float phase = (float) elapsed / UI_BUTTON_FLASH_DURATION_MS;
-    float triangle = phase < 0.5f ? phase * 2.0f : (1.0f - phase) * 2.0f;
-    return triangle * 0.9f;
-}
-
 static uint8_t
-sc_color_mix_with_white(uint8_t base, float amount) {
-    float mixed = base + (255.0f - base) * amount;
+sc_color_lerp(uint8_t from, uint8_t to, float t) {
+    float mixed = from + (to - from) * t;
     mixed = CLAMP(mixed, 0.0f, 255.0f);
     return (uint8_t) mixed;
 }
@@ -795,11 +881,11 @@ sc_screen_draw_panel(struct sc_screen *screen) {
         }
     }
 
-    float flash = sc_screen_get_screenshot_button_flash_intensity(screen);
-    if (flash > 0.0f) {
-        r = sc_color_mix_with_white(r, flash);
-        g = sc_color_mix_with_white(g, flash);
-        b = sc_color_mix_with_white(b, flash);
+    float feedback = sc_screen_get_screenshot_button_feedback_progress(screen);
+    if (feedback > 0.0f) {
+        r = sc_color_lerp(r, 29, feedback);
+        g = sc_color_lerp(g, 177, feedback);
+        b = sc_color_lerp(b, 89, feedback);
     }
 
     if (screen->screenshot_button_bg) {
@@ -809,7 +895,7 @@ sc_screen_draw_panel(struct sc_screen *screen) {
         SDL_SetRenderDrawColor(renderer, r, g, b, 255);
         sc_screen_fill_rounded_rect(renderer, &button, button.w / 2);
     }
-    sc_screen_draw_button_icon(screen, &button, enabled);
+    sc_screen_draw_button_icon(screen, &button);
 
     SDL_Rect toggle = screen->input_toggle_button_rect;
     uint8_t tr;
@@ -933,18 +1019,27 @@ sc_screen_set_input_enabled(struct sc_screen *screen, bool enabled) {
 }
 
 static void
-sc_screen_animate_screenshot_button_flash(struct sc_screen *screen) {
+sc_screen_animate_screenshot_button_feedback(struct sc_screen *screen) {
     if (!screen->video || !screen->panel_rect.w) {
         return;
     }
 
-    screen->screenshot_button_flash_active = true;
-    screen->screenshot_button_flash_start_ms = SDL_GetTicks();
-
-    while (screen->screenshot_button_flash_active) {
+    screen->screenshot_button_feedback_active = true;
+    screen->screenshot_button_feedback_start_ms = SDL_GetTicks();
+    while (true) {
+        uint32_t now = SDL_GetTicks();
+        uint32_t elapsed = now - screen->screenshot_button_feedback_start_ms;
+        if (elapsed >= UI_BUTTON_FEEDBACK_DURATION_MS) {
+            break;
+        }
+        screen->screenshot_button_feedback_progress =
+            sc_screen_get_screenshot_button_feedback_progress(screen);
         sc_screen_render_current_state(screen, false);
         SDL_Delay(16);
     }
+    screen->screenshot_button_feedback_active = false;
+    screen->screenshot_button_feedback_progress = 0.0f;
+    sc_screen_render_current_state(screen, false);
 }
 
 static bool
@@ -1085,7 +1180,7 @@ sc_screen_handle_panel_event(struct sc_screen *screen, const SDL_Event *event) {
                     sc_screen_render_current_state(screen, false);
                     if (activate) {
                         sc_screen_copy_screenshot_to_clipboard(screen);
-                        sc_screen_animate_screenshot_button_flash(screen);
+                        sc_screen_animate_screenshot_button_feedback(screen);
                     }
                     return true;
                 }
@@ -1231,6 +1326,9 @@ sc_screen_init(struct sc_screen *screen,
     screen->screenshot_icon = NULL;
     screen->screenshot_icon_width = 0;
     screen->screenshot_icon_height = 0;
+    screen->screenshot_check_icon = NULL;
+    screen->screenshot_check_icon_width = 0;
+    screen->screenshot_check_icon_height = 0;
     screen->input_toggle_icon = NULL;
     screen->input_toggle_icon_width = 0;
     screen->input_toggle_icon_height = 0;
@@ -1239,8 +1337,9 @@ sc_screen_init(struct sc_screen *screen,
     screen->input_toggle_button_hovered = false;
     screen->input_toggle_button_pressed = false;
     screen->input_enabled = false;
-    screen->screenshot_button_flash_active = false;
-    screen->screenshot_button_flash_start_ms = 0;
+    screen->screenshot_button_feedback_active = false;
+    screen->screenshot_button_feedback_start_ms = 0;
+    screen->screenshot_button_feedback_progress = 0.0f;
     screen->connection_state = SC_SCREEN_CONNECTION_CONNECTING;
     screen->fullscreen = false;
     screen->maximized = false;
@@ -1350,6 +1449,7 @@ sc_screen_init(struct sc_screen *screen,
     sc_screen_load_screenshot_button_bg(screen);
     sc_screen_load_input_toggle_button_bg(screen);
     sc_screen_load_screenshot_icon(screen);
+    sc_screen_load_screenshot_check_icon(screen);
     sc_screen_load_input_toggle_icon(screen);
 
     screen->frame = av_frame_alloc();
@@ -1497,6 +1597,9 @@ sc_screen_destroy(struct sc_screen *screen) {
     }
     if (screen->screenshot_icon) {
         SDL_DestroyTexture(screen->screenshot_icon);
+    }
+    if (screen->screenshot_check_icon) {
+        SDL_DestroyTexture(screen->screenshot_check_icon);
     }
     if (screen->input_toggle_icon) {
         SDL_DestroyTexture(screen->input_toggle_icon);
@@ -1742,6 +1845,8 @@ sc_screen_set_connection_state(struct sc_screen *screen,
         screen->screenshot_button_pressed = false;
         screen->input_toggle_button_hovered = false;
         screen->input_toggle_button_pressed = false;
+        screen->screenshot_button_feedback_active = false;
+        screen->screenshot_button_feedback_progress = 0.0f;
 
         if (sc_screen_is_relative_mode(screen)) {
             sc_mouse_capture_set_active(&screen->mc, false);
@@ -1983,7 +2088,7 @@ sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
     if (screen->video && !screen->input_enabled
             && sc_screen_is_copy_screenshot_shortcut(event)) {
         sc_screen_copy_screenshot_to_clipboard(screen);
-        sc_screen_animate_screenshot_button_flash(screen);
+        sc_screen_animate_screenshot_button_feedback(screen);
         return true;
     }
 

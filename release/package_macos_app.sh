@@ -52,6 +52,11 @@ elif [[ -f "app/data/img/copy_screenshot_figma.png" ]]; then
        "$APP_RESOURCES/copy_screenshot_figma.png"
 fi
 
+if [[ -f "app/data/img/screenshot_success_check.svg" ]]; then
+    sips -s format png -z 256 256 "app/data/img/screenshot_success_check.svg" \
+        --out "$APP_RESOURCES/screenshot_success_check.png" >/dev/null
+fi
+
 if [[ -f "app/data/img/screenshot_button_bg.png" ]]; then
     cp "app/data/img/screenshot_button_bg.png" \
        "$APP_RESOURCES/screenshot_button_bg.png"
@@ -82,6 +87,10 @@ if [[ -f "$RESOURCE_DIR/copy_screenshot_figma.png" ]]; then
     export SCRCPY_SCREENSHOT_ICON_PATH="$RESOURCE_DIR/copy_screenshot_figma.png"
 elif [[ -f "$RESOURCE_DIR/photo_camera_wght300_24.png" ]]; then
     export SCRCPY_SCREENSHOT_ICON_PATH="$RESOURCE_DIR/photo_camera_wght300_24.png"
+fi
+
+if [[ -f "$RESOURCE_DIR/screenshot_success_check.png" ]]; then
+    export SCRCPY_SCREENSHOT_CHECK_ICON_PATH="$RESOURCE_DIR/screenshot_success_check.png"
 fi
 
 if [[ -f "$RESOURCE_DIR/screenshot_button_bg.png" ]]; then
