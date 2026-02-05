@@ -7,6 +7,9 @@
 #include "options.h"
 #include "util/acksync.h"
 #include "util/log.h"
+#ifdef __APPLE__
+# include "sys/darwin/window.h"
+#endif
 
 static void
 sc_screen_otg_render(struct sc_screen_otg *screen) {
@@ -47,6 +50,15 @@ sc_screen_otg_init(struct sc_screen_otg *screen,
         LOGE("Could not create window: %s", SDL_GetError());
         return false;
     }
+
+#ifdef __APPLE__
+    if (!params->window_borderless) {
+        bool native_ok = sc_darwin_window_configure_native_chrome(screen->window);
+        if (!native_ok) {
+            LOGW("Could not configure native macOS window chrome");
+        }
+    }
+#endif
 
     screen->renderer = SDL_CreateRenderer(screen->window, -1, 0);
     if (!screen->renderer) {

@@ -8,6 +8,9 @@
 SDL_Surface *
 scrcpy_icon_load(void);
 
+SDL_Surface *
+scrcpy_icon_load_from_path(const char *path);
+
 void
 scrcpy_icon_destroy(SDL_Surface *icon);
 

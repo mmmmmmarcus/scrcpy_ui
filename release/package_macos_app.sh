@@ -38,6 +38,35 @@ if [[ -f "app/data/icon.png" ]]; then
     cp "app/data/icon.png" "$APP_RESOURCES/icon.png"
 fi
 
+if [[ -f "app/data/img/photo_camera_wght300_24.png" ]]; then
+    cp "app/data/img/photo_camera_wght300_24.png" \
+       "$APP_RESOURCES/photo_camera_wght300_24.png"
+fi
+
+if [[ -f "app/data/img/copy_screenshot_figma.svg" ]]; then
+    # Rasterize SVG at high resolution to keep icon crisp on HiDPI displays.
+    sips -s format png -z 256 256 "app/data/img/copy_screenshot_figma.svg" \
+        --out "$APP_RESOURCES/copy_screenshot_figma.png" >/dev/null
+elif [[ -f "app/data/img/copy_screenshot_figma.png" ]]; then
+    cp "app/data/img/copy_screenshot_figma.png" \
+       "$APP_RESOURCES/copy_screenshot_figma.png"
+fi
+
+if [[ -f "app/data/img/screenshot_button_bg.png" ]]; then
+    cp "app/data/img/screenshot_button_bg.png" \
+       "$APP_RESOURCES/screenshot_button_bg.png"
+fi
+
+if [[ -f "app/data/img/input_toggle_on.svg" ]]; then
+    sips -s format png -z 256 256 "app/data/img/input_toggle_on.svg" \
+        --out "$APP_RESOURCES/input_toggle_on.png" >/dev/null
+fi
+
+if [[ -f "app/data/img/input_toggle_button_bg.png" ]]; then
+    cp "app/data/img/input_toggle_button_bg.png" \
+       "$APP_RESOURCES/input_toggle_button_bg.png"
+fi
+
 cat > "$APP_MACOS/ScrcpyUI" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -47,6 +76,24 @@ RESOURCE_DIR="$(cd "$SELF_DIR/../Resources" && pwd)"
 
 if [[ -f "$RESOURCE_DIR/icon.png" ]]; then
     export SCRCPY_ICON_PATH="$RESOURCE_DIR/icon.png"
+fi
+
+if [[ -f "$RESOURCE_DIR/copy_screenshot_figma.png" ]]; then
+    export SCRCPY_SCREENSHOT_ICON_PATH="$RESOURCE_DIR/copy_screenshot_figma.png"
+elif [[ -f "$RESOURCE_DIR/photo_camera_wght300_24.png" ]]; then
+    export SCRCPY_SCREENSHOT_ICON_PATH="$RESOURCE_DIR/photo_camera_wght300_24.png"
+fi
+
+if [[ -f "$RESOURCE_DIR/screenshot_button_bg.png" ]]; then
+    export SCRCPY_SCREENSHOT_BUTTON_BG_PATH="$RESOURCE_DIR/screenshot_button_bg.png"
+fi
+
+if [[ -f "$RESOURCE_DIR/input_toggle_on.png" ]]; then
+    export SCRCPY_INPUT_TOGGLE_ICON_PATH="$RESOURCE_DIR/input_toggle_on.png"
+fi
+
+if [[ -f "$RESOURCE_DIR/input_toggle_button_bg.png" ]]; then
+    export SCRCPY_INPUT_TOGGLE_BUTTON_BG_PATH="$RESOURCE_DIR/input_toggle_button_bg.png"
 fi
 
 if [[ -f "$SELF_DIR/scrcpy-server" ]]; then

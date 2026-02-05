@@ -274,9 +274,14 @@ scrcpy_icon_load(void) {
         return NULL;
     }
 
-    SDL_Surface *icon = load_from_path(icon_path);
+    SDL_Surface *icon = scrcpy_icon_load_from_path(icon_path);
     free(icon_path);
     return icon;
+}
+
+SDL_Surface *
+scrcpy_icon_load_from_path(const char *path) {
+    return load_from_path(path);
 }
 
 void

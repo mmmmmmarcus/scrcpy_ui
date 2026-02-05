@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <SDL2/SDL.h>
+#include <libswscale/swscale.h>
 
 #include "events.h"
 #include "icon.h"
@@ -13,19 +14,50 @@
 #include "util/log.h"
 #ifdef __APPLE__
 # include "sys/darwin/clipboard.h"
+# include "sys/darwin/window.h"
 #endif
 
 #define DISPLAY_MARGINS 96
-#define UI_PANEL_WIDTH 220
-#define UI_MARGIN 16
-#define UI_BUTTON_HEIGHT 52
-#define UI_PLACEHOLDER_THICKNESS 8
-#define UI_SCREENSHOT_LABEL "COPY SCREENSHOT"
+#define UI_PANEL_WIDTH 72
+#define UI_LEFT_PADDING_X 24
+#define UI_LEFT_PADDING_Y 48
+#define UI_MIRROR_ASPECT_W 249
+#define UI_MIRROR_ASPECT_H 433
+#define UI_BUTTON_WIDTH 40
+#define UI_BUTTON_HEIGHT 88
+#define UI_TOGGLE_BUTTON_SIZE 40
+#define UI_TOGGLE_TOP_OFFSET 20
+#define UI_BUTTON_ICON_SIZE 24
+#define UI_BUTTON_FLASH_DURATION_MS 800
+#define UI_WAITING_LABEL "PLEASE CONNECT A DEVICE"
+#define UI_SCREENSHOT_ICON_PATH_ENV "SCRCPY_SCREENSHOT_ICON_PATH"
+#define UI_SCREENSHOT_BUTTON_BG_PATH_ENV "SCRCPY_SCREENSHOT_BUTTON_BG_PATH"
+#define UI_INPUT_TOGGLE_ICON_PATH_ENV "SCRCPY_INPUT_TOGGLE_ICON_PATH"
+#define UI_INPUT_TOGGLE_BUTTON_BG_PATH_ENV "SCRCPY_INPUT_TOGGLE_BUTTON_BG_PATH"
 
 #define DOWNCAST(SINK) container_of(SINK, struct sc_screen, frame_sink)
 
 static void
 sc_screen_show_idle_window(struct sc_screen *screen);
+
+static void
+sc_screen_draw_text_centered(SDL_Renderer *renderer, const SDL_Rect *area,
+                             const char *text, uint8_t r, uint8_t g, uint8_t b);
+
+static bool
+sc_screen_load_screenshot_icon(struct sc_screen *screen);
+
+static bool
+sc_screen_load_screenshot_button_bg(struct sc_screen *screen);
+
+static bool
+sc_screen_load_input_toggle_icon(struct sc_screen *screen);
+
+static bool
+sc_screen_load_input_toggle_button_bg(struct sc_screen *screen);
+
+static void
+sc_screen_set_input_enabled(struct sc_screen *screen, bool enabled);
 
 static inline struct sc_size
 get_oriented_size(struct sc_size size, enum sc_orientation orientation) {
@@ -214,44 +246,85 @@ sc_screen_is_relative_mode(struct sc_screen *screen) {
 static void
 sc_screen_update_ui_rects(struct sc_screen *screen) {
     struct sc_size drawable_size = get_drawable_size(screen);
-    int panel_width = scale_window_to_drawable(screen, UI_PANEL_WIDTH, true);
-    panel_width = CLAMP(panel_width, 0, drawable_size.width);
+    bool show_panel = screen->connection_state == SC_SCREEN_CONNECTION_RUNNING;
+    int panel_width = 0;
+    if (show_panel) {
+        panel_width = scale_window_to_drawable(screen, UI_PANEL_WIDTH, true);
+        panel_width = CLAMP(panel_width, 0, drawable_size.width);
+    }
 
     screen->panel_rect.x = drawable_size.width - panel_width;
     screen->panel_rect.y = 0;
     screen->panel_rect.w = panel_width;
     screen->panel_rect.h = drawable_size.height;
 
-    int margin = scale_window_to_drawable(screen, UI_MARGIN, true);
-    int button_height =
-        scale_window_to_drawable(screen, UI_BUTTON_HEIGHT, false);
-    button_height = MAX(button_height, 28);
+    int button_width = scale_window_to_drawable(screen, UI_BUTTON_WIDTH, true);
+    int button_height = scale_window_to_drawable(screen, UI_BUTTON_HEIGHT, false);
+    int toggle_button_size =
+        scale_window_to_drawable(screen, UI_TOGGLE_BUTTON_SIZE, true);
+    int toggle_top =
+        scale_window_to_drawable(screen, UI_TOGGLE_TOP_OFFSET, false);
+    button_width = MIN(button_width, panel_width);
+    button_height = MIN(button_height, drawable_size.height);
+    toggle_button_size = MIN(toggle_button_size, panel_width);
 
-    int button_width = panel_width - 2 * margin;
-    button_width = MAX(button_width, 0);
-
-    screen->screenshot_button_rect.x = screen->panel_rect.x + margin;
-    screen->screenshot_button_rect.y = margin;
+    screen->screenshot_button_rect.x = screen->panel_rect.x
+                                     + (panel_width - button_width) / 2;
+    screen->screenshot_button_rect.y = (drawable_size.height - button_height) / 2;
     screen->screenshot_button_rect.w = button_width;
     screen->screenshot_button_rect.h = button_height;
+
+    screen->input_toggle_button_rect.x = screen->screenshot_button_rect.x;
+    screen->input_toggle_button_rect.y = toggle_top;
+    screen->input_toggle_button_rect.w = toggle_button_size;
+    screen->input_toggle_button_rect.h = toggle_button_size;
+}
+
+static SDL_Rect
+sc_screen_get_mirror_slot(struct sc_screen *screen) {
+    int viewport_width = screen->panel_rect.x;
+    int viewport_height = screen->panel_rect.h;
+    if (viewport_width <= 0 || viewport_height <= 0) {
+        return (SDL_Rect) {0, 0, 0, 0};
+    }
+
+    int pad_x = scale_window_to_drawable(screen, UI_LEFT_PADDING_X, true);
+    int pad_y = scale_window_to_drawable(screen, UI_LEFT_PADDING_Y, false);
+    int slot_w = MAX(0, viewport_width - 2 * pad_x);
+    int slot_h = MAX(0, viewport_height - 2 * pad_y);
+    if (!slot_w || !slot_h) {
+        return (SDL_Rect) {0, 0, 0, 0};
+    }
+
+    int rect_w = slot_w;
+    int rect_h = slot_h;
+    bool keep_width = (int64_t) slot_w * UI_MIRROR_ASPECT_H
+                    <= (int64_t) slot_h * UI_MIRROR_ASPECT_W;
+    if (keep_width) {
+        rect_h = (int64_t) slot_w * UI_MIRROR_ASPECT_H / UI_MIRROR_ASPECT_W;
+    } else {
+        rect_w = (int64_t) slot_h * UI_MIRROR_ASPECT_W / UI_MIRROR_ASPECT_H;
+    }
+
+    SDL_Rect rect = {
+        .x = (viewport_width - rect_w) / 2,
+        .y = (viewport_height - rect_h) / 2,
+        .w = rect_w,
+        .h = rect_h,
+    };
+    return rect;
 }
 
 static void
 sc_screen_update_content_rect(struct sc_screen *screen) {
     assert(screen->video);
 
-    struct sc_size drawable_size = get_drawable_size(screen);
     sc_screen_update_ui_rects(screen);
-
     struct sc_size content_size = screen->content_size;
-    struct sc_size video_viewport = {
-        .width = MAX(0, drawable_size.width - screen->panel_rect.w),
-        .height = drawable_size.height,
-    };
 
     SDL_Rect *rect = &screen->rect;
-
-    if (!video_viewport.width || !video_viewport.height) {
+    SDL_Rect mirror_slot = sc_screen_get_mirror_slot(screen);
+    if (!mirror_slot.w || !mirror_slot.h) {
         rect->x = 0;
         rect->y = 0;
         rect->w = 0;
@@ -259,29 +332,140 @@ sc_screen_update_content_rect(struct sc_screen *screen) {
         return;
     }
 
-    if (is_optimal_size(video_viewport, content_size)) {
-        rect->x = 0;
-        rect->y = 0;
-        rect->w = video_viewport.width;
-        rect->h = video_viewport.height;
+    if (!content_size.width || !content_size.height) {
+        *rect = mirror_slot;
         return;
     }
 
-    bool keep_width = content_size.width * video_viewport.height
-                    > content_size.height * video_viewport.width;
+    bool keep_width = (int64_t) content_size.width * mirror_slot.h
+                    > (int64_t) content_size.height * mirror_slot.w;
     if (keep_width) {
-        rect->x = 0;
-        rect->w = video_viewport.width;
-        rect->h = video_viewport.width * content_size.height
-                                      / content_size.width;
-        rect->y = (video_viewport.height - rect->h) / 2;
+        rect->w = mirror_slot.w;
+        rect->h = (int64_t) mirror_slot.w * content_size.height
+                                     / content_size.width;
+        rect->x = mirror_slot.x;
+        rect->y = mirror_slot.y + (mirror_slot.h - rect->h) / 2;
     } else {
-        rect->y = 0;
-        rect->h = video_viewport.height;
-        rect->w = video_viewport.height * content_size.width
-                                       / content_size.height;
-        rect->x = (video_viewport.width - rect->w) / 2;
+        rect->h = mirror_slot.h;
+        rect->w = (int64_t) mirror_slot.h * content_size.width
+                                     / content_size.height;
+        rect->x = mirror_slot.x + (mirror_slot.w - rect->w) / 2;
+        rect->y = mirror_slot.y;
     }
+}
+
+static bool
+sc_screen_load_screenshot_icon(struct sc_screen *screen) {
+    const char *path = getenv(UI_SCREENSHOT_ICON_PATH_ENV);
+    if (!path || !*path) {
+        return true;
+    }
+
+    SDL_Surface *surface = scrcpy_icon_load_from_path(path);
+    if (!surface) {
+        LOGW("Could not load screenshot icon: %s", path);
+        return false;
+    }
+
+    SDL_Texture *texture =
+        SDL_CreateTextureFromSurface(screen->display.renderer, surface);
+    if (!texture) {
+        LOGW("Could not create screenshot icon texture: %s", SDL_GetError());
+        scrcpy_icon_destroy(surface);
+        return false;
+    }
+
+    screen->screenshot_icon = texture;
+    screen->screenshot_icon_width = surface->w;
+    screen->screenshot_icon_height = surface->h;
+    scrcpy_icon_destroy(surface);
+    return true;
+}
+
+static bool
+sc_screen_load_screenshot_button_bg(struct sc_screen *screen) {
+    const char *path = getenv(UI_SCREENSHOT_BUTTON_BG_PATH_ENV);
+    if (!path || !*path) {
+        return true;
+    }
+
+    SDL_Surface *surface = scrcpy_icon_load_from_path(path);
+    if (!surface) {
+        LOGW("Could not load screenshot button background: %s", path);
+        return false;
+    }
+
+    SDL_Texture *texture =
+        SDL_CreateTextureFromSurface(screen->display.renderer, surface);
+    if (!texture) {
+        LOGW("Could not create screenshot button background texture: %s",
+             SDL_GetError());
+        scrcpy_icon_destroy(surface);
+        return false;
+    }
+
+    screen->screenshot_button_bg = texture;
+    screen->screenshot_button_bg_width = surface->w;
+    screen->screenshot_button_bg_height = surface->h;
+    scrcpy_icon_destroy(surface);
+    return true;
+}
+
+static bool
+sc_screen_load_input_toggle_icon(struct sc_screen *screen) {
+    const char *path = getenv(UI_INPUT_TOGGLE_ICON_PATH_ENV);
+    if (!path || !*path) {
+        return true;
+    }
+
+    SDL_Surface *surface = scrcpy_icon_load_from_path(path);
+    if (!surface) {
+        LOGW("Could not load input toggle icon: %s", path);
+        return false;
+    }
+
+    SDL_Texture *texture =
+        SDL_CreateTextureFromSurface(screen->display.renderer, surface);
+    if (!texture) {
+        LOGW("Could not create input toggle icon texture: %s", SDL_GetError());
+        scrcpy_icon_destroy(surface);
+        return false;
+    }
+
+    screen->input_toggle_icon = texture;
+    screen->input_toggle_icon_width = surface->w;
+    screen->input_toggle_icon_height = surface->h;
+    scrcpy_icon_destroy(surface);
+    return true;
+}
+
+static bool
+sc_screen_load_input_toggle_button_bg(struct sc_screen *screen) {
+    const char *path = getenv(UI_INPUT_TOGGLE_BUTTON_BG_PATH_ENV);
+    if (!path || !*path) {
+        return true;
+    }
+
+    SDL_Surface *surface = scrcpy_icon_load_from_path(path);
+    if (!surface) {
+        LOGW("Could not load input toggle button background: %s", path);
+        return false;
+    }
+
+    SDL_Texture *texture =
+        SDL_CreateTextureFromSurface(screen->display.renderer, surface);
+    if (!texture) {
+        LOGW("Could not create input toggle button background texture: %s",
+             SDL_GetError());
+        scrcpy_icon_destroy(surface);
+        return false;
+    }
+
+    screen->input_toggle_button_bg = texture;
+    screen->input_toggle_button_bg_width = surface->w;
+    screen->input_toggle_button_bg_height = surface->h;
+    scrcpy_icon_destroy(surface);
+    return true;
 }
 
 // render the texture to the renderer
@@ -291,85 +475,49 @@ sc_screen_update_content_rect(struct sc_screen *screen) {
 static void
 sc_screen_draw_idle_placeholder(struct sc_screen *screen) {
     SDL_Renderer *renderer = screen->display.renderer;
-
-    int viewport_width = screen->panel_rect.x;
-    int viewport_height = screen->panel_rect.h;
-    if (viewport_width <= 0 || viewport_height <= 0) {
+    SDL_Rect mirror = sc_screen_get_mirror_slot(screen);
+    if (!mirror.w || !mirror.h) {
         return;
     }
 
-    int min_side = MIN(viewport_width, viewport_height);
-    int phone_width = min_side * 2 / 5;
-    int phone_height = phone_width * 16 / 9;
-    if (phone_height > viewport_height * 4 / 5) {
-        phone_height = viewport_height * 4 / 5;
-        phone_width = phone_height * 9 / 16;
+    SDL_SetRenderDrawColor(renderer, 41, 41, 41, 255);
+    SDL_RenderFillRect(renderer, &mirror);
+
+    if (screen->connection_state != SC_SCREEN_CONNECTION_RUNNING) {
+        SDL_Rect label_area = {
+            .x = 0,
+            .y = mirror.y + mirror.h / 2 - 14,
+            .w = screen->panel_rect.x,
+            .h = 28,
+        };
+        sc_screen_draw_text_centered(renderer, &label_area, UI_WAITING_LABEL,
+                                     176, 183, 191);
     }
-
-    int cx = viewport_width / 2;
-    int cy = viewport_height / 2;
-
-    SDL_Rect phone = {
-        .x = cx - phone_width / 2,
-        .y = cy - phone_height / 2,
-        .w = phone_width,
-        .h = phone_height,
-    };
-
-    uint8_t border_r = 95;
-    uint8_t border_g = 108;
-    uint8_t border_b = 120;
-    if (screen->connection_state == SC_SCREEN_CONNECTION_FAILED) {
-        border_r = 160;
-        border_g = 84;
-        border_b = 84;
-    } else if (screen->connection_state == SC_SCREEN_CONNECTION_DISCONNECTED) {
-        border_r = 167;
-        border_g = 115;
-        border_b = 72;
-    } else if (screen->connection_state == SC_SCREEN_CONNECTION_RUNNING) {
-        border_r = 81;
-        border_g = 130;
-        border_b = 178;
-    }
-
-    SDL_SetRenderDrawColor(renderer, border_r, border_g, border_b, 255);
-    SDL_RenderDrawRect(renderer, &phone);
-
-    int thickness =
-        MAX(2, scale_window_to_drawable(screen, UI_PLACEHOLDER_THICKNESS,
-                                        true));
-    SDL_Rect inner = {
-        .x = phone.x + thickness,
-        .y = phone.y + thickness,
-        .w = MAX(0, phone.w - 2 * thickness),
-        .h = MAX(0, phone.h - 2 * thickness),
-    };
-
-    SDL_SetRenderDrawColor(renderer, 29, 35, 42, 255);
-    SDL_RenderFillRect(renderer, &inner);
-
-    SDL_Rect sensor = {
-        .x = phone.x + phone.w / 2 - phone.w / 8,
-        .y = phone.y + thickness,
-        .w = phone.w / 4,
-        .h = MAX(2, thickness / 2),
-    };
-    SDL_SetRenderDrawColor(renderer, border_r, border_g, border_b, 255);
-    SDL_RenderFillRect(renderer, &sensor);
 }
 
 static const uint8_t *
 sc_screen_get_button_glyph(char c) {
     static const uint8_t glyph_space[7] = {0, 0, 0, 0, 0, 0, 0};
+    static const uint8_t glyph_a[7] = {
+        0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11,
+    };
     static const uint8_t glyph_c[7] = {
         0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E,
+    };
+    static const uint8_t glyph_d[7] = {
+        0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E,
     };
     static const uint8_t glyph_e[7] = {
         0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F,
     };
     static const uint8_t glyph_h[7] = {
         0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11,
+    };
+    static const uint8_t glyph_i[7] = {
+        0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1F,
+    };
+    static const uint8_t glyph_l[7] = {
+        0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F,
     };
     static const uint8_t glyph_n[7] = {
         0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11,
@@ -389,6 +537,9 @@ sc_screen_get_button_glyph(char c) {
     static const uint8_t glyph_t[7] = {
         0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
     };
+    static const uint8_t glyph_v[7] = {
+        0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04,
+    };
     static const uint8_t glyph_y[7] = {
         0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04,
     };
@@ -396,12 +547,20 @@ sc_screen_get_button_glyph(char c) {
     switch (toupper((unsigned char) c)) {
         case ' ':
             return glyph_space;
+        case 'A':
+            return glyph_a;
         case 'C':
             return glyph_c;
+        case 'D':
+            return glyph_d;
         case 'E':
             return glyph_e;
         case 'H':
             return glyph_h;
+        case 'I':
+            return glyph_i;
+        case 'L':
+            return glyph_l;
         case 'N':
             return glyph_n;
         case 'O':
@@ -414,6 +573,8 @@ sc_screen_get_button_glyph(char c) {
             return glyph_s;
         case 'T':
             return glyph_t;
+        case 'V':
+            return glyph_v;
         case 'Y':
             return glyph_y;
         default:
@@ -422,36 +583,31 @@ sc_screen_get_button_glyph(char c) {
 }
 
 static void
-sc_screen_draw_button_label(SDL_Renderer *renderer, const SDL_Rect *button,
-                            bool enabled) {
-    const char *label = UI_SCREENSHOT_LABEL;
-    size_t len = strlen(label);
-    if (!len || !button->w || !button->h) {
+sc_screen_draw_text_centered(SDL_Renderer *renderer, const SDL_Rect *area,
+                             const char *text, uint8_t r, uint8_t g, uint8_t b) {
+    size_t len = strlen(text);
+    if (!len || !area->w || !area->h) {
         return;
     }
 
-    int padding = MAX(2, button->h / 8);
+    int padding = MAX(2, area->h / 8);
     int max_scale_w =
-        (button->w - 2 * padding) / (int) (len * 5 + (len - 1));
-    int max_scale_h = (button->h - 2 * padding) / 7;
+        (area->w - 2 * padding) / (int) (len * 5 + (len - 1));
+    int max_scale_h = (area->h - 2 * padding) / 7;
     int scale = MAX(1, MIN(max_scale_w, max_scale_h));
 
     int glyph_width = 5 * scale;
     int spacing = scale;
     int text_width = (int) len * glyph_width + (int) (len - 1) * spacing;
     int text_height = 7 * scale;
-    int start_x = button->x + (button->w - text_width) / 2;
-    int start_y = button->y + (button->h - text_height) / 2;
+    int start_x = area->x + (area->w - text_width) / 2;
+    int start_y = area->y + (area->h - text_height) / 2;
 
-    if (enabled) {
-        SDL_SetRenderDrawColor(renderer, 239, 246, 255, 255);
-    } else {
-        SDL_SetRenderDrawColor(renderer, 216, 224, 232, 255);
-    }
+    SDL_SetRenderDrawColor(renderer, r, g, b, 255);
 
     int x = start_x;
     for (size_t i = 0; i < len; ++i) {
-        const uint8_t *rows = sc_screen_get_button_glyph(label[i]);
+        const uint8_t *rows = sc_screen_get_button_glyph(text[i]);
         for (int row = 0; row < 7; ++row) {
             for (int col = 0; col < 5; ++col) {
                 if (!(rows[row] & (1 << (4 - col)))) {
@@ -471,80 +627,230 @@ sc_screen_draw_button_label(SDL_Renderer *renderer, const SDL_Rect *button,
 }
 
 static void
+sc_screen_draw_button_icon(struct sc_screen *screen, const SDL_Rect *button,
+                           bool enabled) {
+    if (!screen->screenshot_icon) {
+        return;
+    }
+
+    int icon_w = scale_window_to_drawable(screen, UI_BUTTON_ICON_SIZE, true);
+    int icon_h = scale_window_to_drawable(screen, UI_BUTTON_ICON_SIZE, false);
+    int available_w = MAX(1, button->w - button->w / 3);
+    int available_h = MAX(1, button->h - button->h / 3);
+    icon_w = MIN(icon_w, available_w);
+    icon_h = MIN(icon_h, available_h);
+    if (!icon_w || !icon_h) {
+        return;
+    }
+
+    SDL_Rect dst = {
+        .x = button->x + (button->w - icon_w) / 2,
+        .y = button->y + (button->h - icon_h) / 2,
+        .w = icon_w,
+        .h = icon_h,
+    };
+
+    (void) enabled;
+    SDL_SetTextureColorMod(screen->screenshot_icon, 40, 40, 48);
+    SDL_RenderCopy(screen->display.renderer, screen->screenshot_icon, NULL,
+                   &dst);
+}
+
+static void
+sc_screen_draw_toggle_icon(struct sc_screen *screen, const SDL_Rect *button) {
+    if (!screen->input_toggle_icon) {
+        return;
+    }
+
+    int icon_w = scale_window_to_drawable(screen, UI_BUTTON_ICON_SIZE, true);
+    int icon_h = scale_window_to_drawable(screen, UI_BUTTON_ICON_SIZE, false);
+    icon_w = MIN(icon_w, button->w);
+    icon_h = MIN(icon_h, button->h);
+    if (!icon_w || !icon_h) {
+        return;
+    }
+
+    SDL_Rect dst = {
+        .x = button->x + (button->w - icon_w) / 2,
+        .y = button->y + (button->h - icon_h) / 2,
+        .w = icon_w,
+        .h = icon_h,
+    };
+
+    SDL_SetTextureColorMod(screen->input_toggle_icon, 40, 40, 48);
+    SDL_RenderCopy(screen->display.renderer, screen->input_toggle_icon, NULL,
+                   &dst);
+}
+
+static float
+sc_screen_get_screenshot_button_flash_intensity(struct sc_screen *screen) {
+    if (!screen->screenshot_button_flash_active) {
+        return 0.0f;
+    }
+
+    uint32_t now = SDL_GetTicks();
+    uint32_t elapsed = now - screen->screenshot_button_flash_start_ms;
+    if (elapsed >= UI_BUTTON_FLASH_DURATION_MS) {
+        screen->screenshot_button_flash_active = false;
+        return 0.0f;
+    }
+
+    float phase = (float) elapsed / UI_BUTTON_FLASH_DURATION_MS;
+    float triangle = phase < 0.5f ? phase * 2.0f : (1.0f - phase) * 2.0f;
+    return triangle * 0.9f;
+}
+
+static uint8_t
+sc_color_mix_with_white(uint8_t base, float amount) {
+    float mixed = base + (255.0f - base) * amount;
+    mixed = CLAMP(mixed, 0.0f, 255.0f);
+    return (uint8_t) mixed;
+}
+
+static void
+sc_screen_fill_circle(SDL_Renderer *renderer, int cx, int cy, int radius) {
+    for (int y = -radius; y <= radius; ++y) {
+        int dx = radius;
+        while (dx > 0 && dx * dx + y * y > radius * radius) {
+            --dx;
+        }
+        SDL_Rect row = {
+            .x = cx - dx,
+            .y = cy + y,
+            .w = 2 * dx + 1,
+            .h = 1,
+        };
+        SDL_RenderFillRect(renderer, &row);
+    }
+}
+
+static void
+sc_screen_fill_rounded_rect(SDL_Renderer *renderer, const SDL_Rect *rect,
+                            int radius) {
+    radius = CLAMP(radius, 0, MIN(rect->w, rect->h) / 2);
+    if (!radius) {
+        SDL_RenderFillRect(renderer, rect);
+        return;
+    }
+
+    SDL_Rect middle = {
+        .x = rect->x + radius,
+        .y = rect->y,
+        .w = rect->w - 2 * radius,
+        .h = rect->h,
+    };
+    SDL_Rect left = {
+        .x = rect->x,
+        .y = rect->y + radius,
+        .w = radius,
+        .h = rect->h - 2 * radius,
+    };
+    SDL_Rect right = {
+        .x = rect->x + rect->w - radius,
+        .y = rect->y + radius,
+        .w = radius,
+        .h = rect->h - 2 * radius,
+    };
+    SDL_RenderFillRect(renderer, &middle);
+    SDL_RenderFillRect(renderer, &left);
+    SDL_RenderFillRect(renderer, &right);
+
+    sc_screen_fill_circle(renderer, rect->x + radius, rect->y + radius, radius);
+    sc_screen_fill_circle(renderer, rect->x + rect->w - radius - 1,
+                          rect->y + radius, radius);
+    sc_screen_fill_circle(renderer, rect->x + radius,
+                          rect->y + rect->h - radius - 1, radius);
+    sc_screen_fill_circle(renderer, rect->x + rect->w - radius - 1,
+                          rect->y + rect->h - radius - 1, radius);
+}
+
+static void
 sc_screen_draw_panel(struct sc_screen *screen) {
     SDL_Renderer *renderer = screen->display.renderer;
+    if (!screen->panel_rect.w) {
+        return;
+    }
 
-    SDL_SetRenderDrawColor(renderer, 20, 23, 27, 255);
+    SDL_SetRenderDrawColor(renderer, 50, 50, 50, 255);
     SDL_RenderFillRect(renderer, &screen->panel_rect);
-
-    int margin = scale_window_to_drawable(screen, UI_MARGIN, true);
-    SDL_Rect separator = {
-        .x = MAX(0, screen->panel_rect.x - 1),
-        .y = 0,
-        .w = 1,
-        .h = screen->panel_rect.h,
-    };
-    SDL_SetRenderDrawColor(renderer, 44, 50, 58, 255);
-    SDL_RenderFillRect(renderer, &separator);
 
     SDL_Rect button = screen->screenshot_button_rect;
     bool enabled = screen->has_frame;
 
-    uint8_t r = 82;
-    uint8_t g = 98;
-    uint8_t b = 115;
+    uint8_t r = 196;
+    uint8_t g = 197;
+    uint8_t b = 201;
     if (enabled) {
-        r = 40;
-        g = 122;
-        b = 199;
+        r = 213;
+        g = 214;
+        b = 217;
         if (screen->screenshot_button_pressed) {
-            r = 33;
-            g = 104;
-            b = 170;
+            r = 184;
+            g = 186;
+            b = 191;
         } else if (screen->screenshot_button_hovered) {
-            r = 56;
-            g = 140;
-            b = 216;
+            r = 206;
+            g = 207;
+            b = 211;
         }
     }
 
-    SDL_SetRenderDrawColor(renderer, r, g, b, 255);
-    SDL_RenderFillRect(renderer, &button);
-    SDL_SetRenderDrawColor(renderer, 28, 32, 37, 255);
-    SDL_RenderDrawRect(renderer, &button);
-    sc_screen_draw_button_label(renderer, &button, enabled);
-
-    SDL_Rect status = {
-        .x = screen->panel_rect.x + margin,
-        .y = button.y + button.h + margin,
-        .w = MAX(0, screen->panel_rect.w - 2 * margin),
-        .h = MAX(3, margin / 2),
-    };
-
-    uint8_t status_r = 194;
-    uint8_t status_g = 170;
-    uint8_t status_b = 75;
-    switch (screen->connection_state) {
-        case SC_SCREEN_CONNECTION_RUNNING:
-            status_r = 128;
-            status_g = 136;
-            status_b = 146;
-            break;
-        case SC_SCREEN_CONNECTION_DISCONNECTED:
-            status_r = 192;
-            status_g = 131;
-            status_b = 77;
-            break;
-        case SC_SCREEN_CONNECTION_FAILED:
-            status_r = 186;
-            status_g = 87;
-            status_b = 87;
-            break;
-        case SC_SCREEN_CONNECTION_CONNECTING:
-            break;
+    float flash = sc_screen_get_screenshot_button_flash_intensity(screen);
+    if (flash > 0.0f) {
+        r = sc_color_mix_with_white(r, flash);
+        g = sc_color_mix_with_white(g, flash);
+        b = sc_color_mix_with_white(b, flash);
     }
-    SDL_SetRenderDrawColor(renderer, status_r, status_g, status_b, 255);
-    SDL_RenderFillRect(renderer, &status);
+
+    if (screen->screenshot_button_bg) {
+        SDL_SetTextureColorMod(screen->screenshot_button_bg, r, g, b);
+        SDL_RenderCopy(renderer, screen->screenshot_button_bg, NULL, &button);
+    } else {
+        SDL_SetRenderDrawColor(renderer, r, g, b, 255);
+        sc_screen_fill_rounded_rect(renderer, &button, button.w / 2);
+    }
+    sc_screen_draw_button_icon(screen, &button, enabled);
+
+    SDL_Rect toggle = screen->input_toggle_button_rect;
+    uint8_t tr;
+    uint8_t tg;
+    uint8_t tb;
+    if (screen->input_enabled) {
+        tr = 255;
+        tg = 199;
+        tb = 0;
+        if (screen->input_toggle_button_pressed) {
+            tr = 242;
+            tg = 186;
+            tb = 0;
+        } else if (screen->input_toggle_button_hovered) {
+            tr = 255;
+            tg = 210;
+            tb = 38;
+        }
+    } else {
+        tr = 217;
+        tg = 217;
+        tb = 217;
+        if (screen->input_toggle_button_pressed) {
+            tr = 201;
+            tg = 201;
+            tb = 201;
+        } else if (screen->input_toggle_button_hovered) {
+            tr = 229;
+            tg = 229;
+            tb = 229;
+        }
+    }
+
+    if (screen->input_toggle_button_bg) {
+        SDL_SetTextureColorMod(screen->input_toggle_button_bg, tr, tg, tb);
+        SDL_RenderCopy(renderer, screen->input_toggle_button_bg, NULL, &toggle);
+    } else {
+        SDL_SetRenderDrawColor(renderer, tr, tg, tb, 255);
+        sc_screen_fill_rounded_rect(renderer, &toggle, toggle.w / 2);
+    }
+    sc_screen_draw_toggle_icon(screen, &toggle);
 }
 
 static enum sc_display_result
@@ -555,6 +861,7 @@ sc_screen_draw_video(struct sc_screen *screen, bool update_content_rect) {
         sc_screen_update_content_rect(screen);
     }
 
+    SDL_SetRenderDrawColor(screen->display.renderer, 28, 28, 28, 255);
     enum sc_display_result res = sc_display_render(&screen->display,
                                                    &screen->rect,
                                                    screen->orientation);
@@ -581,7 +888,7 @@ sc_screen_render_idle(struct sc_screen *screen) {
     sc_screen_update_ui_rects(screen);
 
     SDL_Renderer *renderer = screen->display.renderer;
-    SDL_SetRenderDrawColor(renderer, 17, 20, 24, 255);
+    SDL_SetRenderDrawColor(renderer, 28, 28, 28, 255);
     SDL_RenderClear(renderer);
     sc_screen_draw_idle_placeholder(screen);
     sc_screen_draw_panel(screen);
@@ -612,38 +919,57 @@ sc_screen_render_current_state(struct sc_screen *screen, bool update_content) {
     }
 }
 
+static void
+sc_screen_set_input_enabled(struct sc_screen *screen, bool enabled) {
+    if (screen->input_enabled == enabled) {
+        return;
+    }
+
+    screen->input_enabled = enabled;
+
+    bool capture_active = enabled && sc_screen_is_relative_mode(screen)
+                       && (!screen->video || screen->has_frame);
+    sc_mouse_capture_set_active(&screen->mc, capture_active);
+}
+
+static void
+sc_screen_animate_screenshot_button_flash(struct sc_screen *screen) {
+    if (!screen->video || !screen->panel_rect.w) {
+        return;
+    }
+
+    screen->screenshot_button_flash_active = true;
+    screen->screenshot_button_flash_start_ms = SDL_GetTicks();
+
+    while (screen->screenshot_button_flash_active) {
+        sc_screen_render_current_state(screen, false);
+        SDL_Delay(16);
+    }
+}
+
 static bool
 sc_screen_copy_screenshot_to_clipboard(struct sc_screen *screen) {
     assert(screen->video);
 
-    if (!screen->has_frame || !screen->rect.w || !screen->rect.h) {
+    if (!screen->has_frame || !screen->frame) {
         LOGW("No video frame available to capture");
         return false;
     }
 
-    enum sc_display_result res = sc_screen_draw_video(screen, false);
-    if (res != SC_DISPLAY_RESULT_OK) {
-        LOGW("Could not prepare screenshot frame");
-        return false;
-    }
-
-    int width = screen->rect.w;
-    int height = screen->rect.h;
+    int width = screen->frame->width;
+    int height = screen->frame->height;
     if (width <= 0 || height <= 0) {
-        sc_display_present(&screen->display);
         LOGW("Invalid screenshot size");
         return false;
     }
 
-    if ((size_t) width > SIZE_MAX / 4) {
-        sc_display_present(&screen->display);
+    if ((size_t) width > SIZE_MAX / 4u) {
         LOGW("Screenshot size is too large");
         return false;
     }
 
     size_t pitch = (size_t) width * 4;
     if ((size_t) height > SIZE_MAX / pitch) {
-        sc_display_present(&screen->display);
         LOGW("Screenshot buffer is too large");
         return false;
     }
@@ -651,16 +977,32 @@ sc_screen_copy_screenshot_to_clipboard(struct sc_screen *screen) {
     size_t size = (size_t) height * pitch;
     uint8_t *pixels = malloc(size);
     if (!pixels) {
-        sc_display_present(&screen->display);
         LOG_OOM();
         return false;
     }
 
-    int ret = SDL_RenderReadPixels(screen->display.renderer, &screen->rect,
-                                   SDL_PIXELFORMAT_ABGR8888, pixels, pitch);
+    struct SwsContext *sws_ctx =
+        sws_getContext(width, height, screen->frame->format,
+                       width, height, AV_PIX_FMT_RGBA, SWS_BILINEAR,
+                       NULL, NULL, NULL);
+    if (!sws_ctx) {
+        free(pixels);
+        LOGW("Could not initialize conversion context for screenshot");
+        return false;
+    }
+
+    uint8_t *dst_data[4] = {pixels, NULL, NULL, NULL};
+    int dst_linesize[4] = {(int) pitch, 0, 0, 0};
+    int ret = sws_scale(sws_ctx,
+                        (const uint8_t * const *) screen->frame->data,
+                        screen->frame->linesize,
+                        0, height,
+                        dst_data, dst_linesize);
+    sws_freeContext(sws_ctx);
+
     bool ok = false;
-    if (ret) {
-        LOGW("Could not read pixels for screenshot: %s", SDL_GetError());
+    if (ret <= 0) {
+        LOGW("Could not convert frame for screenshot");
     } else {
 #ifdef __APPLE__
         ok = sc_darwin_clipboard_set_image_rgba8888(pixels, pitch, width,
@@ -674,37 +1016,11 @@ sc_screen_copy_screenshot_to_clipboard(struct sc_screen *screen) {
     }
 
     free(pixels);
-    sc_display_present(&screen->display);
 
     if (ok) {
-        LOGI("Screenshot copied to clipboard");
+        LOGI("Screenshot copied to clipboard (%dx%d)", width, height);
     }
     return ok;
-}
-
-static void
-sc_screen_flash_screenshot_feedback(struct sc_screen *screen) {
-    struct sc_size drawable_size = get_drawable_size(screen);
-    if (!drawable_size.width || !drawable_size.height) {
-        return;
-    }
-
-    SDL_Renderer *renderer = screen->display.renderer;
-    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 220);
-
-    SDL_Rect flash = {
-        .x = 0,
-        .y = 0,
-        .w = drawable_size.width,
-        .h = drawable_size.height,
-    };
-    SDL_RenderFillRect(renderer, &flash);
-    sc_display_present(&screen->display);
-
-    SDL_Delay(500);
-
-    sc_screen_render_current_state(screen, false);
 }
 
 static bool
@@ -723,12 +1039,18 @@ sc_screen_handle_panel_event(struct sc_screen *screen, const SDL_Event *event) {
             sc_screen_hidpi_scale_coords(screen, &x, &y);
             bool in_button = screen->has_frame
                           && point_in_rect(x, y, &screen->screenshot_button_rect);
+            bool in_toggle = point_in_rect(x, y, &screen->input_toggle_button_rect);
             bool in_panel = point_in_rect(x, y, &screen->panel_rect);
 
-            if (in_button != screen->screenshot_button_hovered) {
+            if (in_button != screen->screenshot_button_hovered
+                    || in_toggle != screen->input_toggle_button_hovered) {
                 screen->screenshot_button_hovered = in_button;
+                screen->input_toggle_button_hovered = in_toggle;
                 if (!in_button) {
                     screen->screenshot_button_pressed = false;
+                }
+                if (!in_toggle) {
+                    screen->input_toggle_button_pressed = false;
                 }
                 sc_screen_render_current_state(screen, false);
             }
@@ -742,11 +1064,17 @@ sc_screen_handle_panel_event(struct sc_screen *screen, const SDL_Event *event) {
             bool in_panel = point_in_rect(x, y, &screen->panel_rect);
             bool in_button = screen->has_frame
                           && point_in_rect(x, y, &screen->screenshot_button_rect);
+            bool in_toggle = point_in_rect(x, y, &screen->input_toggle_button_rect);
 
             if (event->button.button == SDL_BUTTON_LEFT) {
                 bool down = event->type == SDL_MOUSEBUTTONDOWN;
                 if (down && in_button) {
                     screen->screenshot_button_pressed = true;
+                    sc_screen_render_current_state(screen, false);
+                    return true;
+                }
+                if (down && in_toggle) {
+                    screen->input_toggle_button_pressed = true;
                     sc_screen_render_current_state(screen, false);
                     return true;
                 }
@@ -757,8 +1085,17 @@ sc_screen_handle_panel_event(struct sc_screen *screen, const SDL_Event *event) {
                     sc_screen_render_current_state(screen, false);
                     if (activate) {
                         sc_screen_copy_screenshot_to_clipboard(screen);
-                        sc_screen_flash_screenshot_feedback(screen);
+                        sc_screen_animate_screenshot_button_flash(screen);
                     }
+                    return true;
+                }
+                if (!down && screen->input_toggle_button_pressed) {
+                    bool activate = in_toggle;
+                    screen->input_toggle_button_pressed = false;
+                    if (activate) {
+                        sc_screen_set_input_enabled(screen, !screen->input_enabled);
+                    }
+                    sc_screen_render_current_state(screen, false);
                     return true;
                 }
             }
@@ -884,8 +1221,26 @@ sc_screen_init(struct sc_screen *screen,
     screen->rect = (SDL_Rect) {0, 0, 0, 0};
     screen->panel_rect = (SDL_Rect) {0, 0, 0, 0};
     screen->screenshot_button_rect = (SDL_Rect) {0, 0, 0, 0};
+    screen->input_toggle_button_rect = (SDL_Rect) {0, 0, 0, 0};
+    screen->screenshot_button_bg = NULL;
+    screen->screenshot_button_bg_width = 0;
+    screen->screenshot_button_bg_height = 0;
+    screen->input_toggle_button_bg = NULL;
+    screen->input_toggle_button_bg_width = 0;
+    screen->input_toggle_button_bg_height = 0;
+    screen->screenshot_icon = NULL;
+    screen->screenshot_icon_width = 0;
+    screen->screenshot_icon_height = 0;
+    screen->input_toggle_icon = NULL;
+    screen->input_toggle_icon_width = 0;
+    screen->input_toggle_icon_height = 0;
     screen->screenshot_button_hovered = false;
     screen->screenshot_button_pressed = false;
+    screen->input_toggle_button_hovered = false;
+    screen->input_toggle_button_pressed = false;
+    screen->input_enabled = false;
+    screen->screenshot_button_flash_active = false;
+    screen->screenshot_button_flash_start_ms = 0;
     screen->connection_state = SC_SCREEN_CONNECTION_CONNECTING;
     screen->fullscreen = false;
     screen->maximized = false;
@@ -938,8 +1293,8 @@ sc_screen_init(struct sc_screen *screen,
 
     int x = SDL_WINDOWPOS_UNDEFINED;
     int y = SDL_WINDOWPOS_UNDEFINED;
-    int width = params->video ? 1024 : 256;
-    int height = params->video ? 640 : 256;
+    int width = params->video ? 800 : 256;
+    int height = params->video ? 600 : 256;
     if (params->window_x != SC_WINDOW_POSITION_UNDEFINED) {
         x = params->window_x;
     }
@@ -958,6 +1313,16 @@ sc_screen_init(struct sc_screen *screen,
         LOGE("Could not create window: %s", SDL_GetError());
         goto error_destroy_fps_counter;
     }
+
+#ifdef __APPLE__
+    if (!params->window_borderless) {
+        bool native_ok =
+            sc_darwin_window_configure_native_chrome(screen->window);
+        if (!native_ok) {
+            LOGW("Could not configure native macOS window chrome");
+        }
+    }
+#endif
 
     SDL_Surface *icon = scrcpy_icon_load();
     if (icon) {
@@ -981,6 +1346,11 @@ sc_screen_init(struct sc_screen *screen,
     if (!ok) {
         goto error_destroy_window;
     }
+
+    sc_screen_load_screenshot_button_bg(screen);
+    sc_screen_load_input_toggle_button_bg(screen);
+    sc_screen_load_screenshot_icon(screen);
+    sc_screen_load_input_toggle_icon(screen);
 
     screen->frame = av_frame_alloc();
     if (!screen->frame) {
@@ -1026,7 +1396,7 @@ sc_screen_init(struct sc_screen *screen,
 
     if (screen->video) {
         sc_screen_show_idle_window(screen);
-    } else if (sc_screen_is_relative_mode(screen)) {
+    } else if (screen->input_enabled && sc_screen_is_relative_mode(screen)) {
         // Capture mouse immediately if video mirroring is disabled
         sc_mouse_capture_set_active(&screen->mc, true);
     }
@@ -1071,11 +1441,17 @@ sc_screen_show_initial_window(struct sc_screen *screen) {
     int y = screen->req.y != SC_WINDOW_POSITION_UNDEFINED
           ? screen->req.y : (int) SDL_WINDOWPOS_CENTERED;
 
-    struct sc_size window_size =
-        get_initial_optimal_size(screen->content_size, screen->req.width,
-                                                       screen->req.height);
-    uint32_t width = (uint32_t) window_size.width + UI_PANEL_WIDTH;
-    window_size.width = MIN(width, 0x7FFF);
+    struct sc_size window_size;
+    if (!screen->req.width && !screen->req.height) {
+        // Keep the initial default startup size on first connection.
+        window_size = get_window_size(screen);
+    } else {
+        window_size = get_initial_optimal_size(screen->content_size,
+                                               screen->req.width,
+                                               screen->req.height);
+        uint32_t width = (uint32_t) window_size.width + UI_PANEL_WIDTH;
+        window_size.width = MIN(width, 0x7FFF);
+    }
 
     if (!screen->fullscreen && !screen->maximized && !screen->minimized) {
         set_window_size(screen, window_size);
@@ -1113,6 +1489,18 @@ sc_screen_destroy(struct sc_screen *screen) {
 #ifndef NDEBUG
     assert(!screen->open);
 #endif
+    if (screen->screenshot_button_bg) {
+        SDL_DestroyTexture(screen->screenshot_button_bg);
+    }
+    if (screen->input_toggle_button_bg) {
+        SDL_DestroyTexture(screen->input_toggle_button_bg);
+    }
+    if (screen->screenshot_icon) {
+        SDL_DestroyTexture(screen->screenshot_icon);
+    }
+    if (screen->input_toggle_icon) {
+        SDL_DestroyTexture(screen->input_toggle_icon);
+    }
     sc_display_destroy(&screen->display);
     av_frame_free(&screen->frame);
     SDL_DestroyWindow(screen->window);
@@ -1276,7 +1664,7 @@ sc_screen_apply_frame(struct sc_screen *screen) {
         // this is the very first frame, show the window
         sc_screen_show_initial_window(screen);
 
-        if (sc_screen_is_relative_mode(screen)) {
+        if (screen->input_enabled && sc_screen_is_relative_mode(screen)) {
             // Capture mouse on start
             sc_mouse_capture_set_active(&screen->mc, true);
         }
@@ -1352,6 +1740,8 @@ sc_screen_set_connection_state(struct sc_screen *screen,
         screen->paused = false;
         screen->screenshot_button_hovered = false;
         screen->screenshot_button_pressed = false;
+        screen->input_toggle_button_hovered = false;
+        screen->input_toggle_button_pressed = false;
 
         if (sc_screen_is_relative_mode(screen)) {
             sc_mouse_capture_set_active(&screen->mc, false);
@@ -1376,7 +1766,8 @@ sc_screen_set_input_processors(struct sc_screen *screen,
     bool relative_mode = sc_screen_is_relative_mode(screen);
 
     if (relative_mode != was_relative_mode) {
-        bool active = relative_mode && (!screen->video || screen->has_frame);
+        bool active = screen->input_enabled && relative_mode
+                   && (!screen->video || screen->has_frame);
         sc_mouse_capture_set_active(&screen->mc, active);
     }
 }
@@ -1470,6 +1861,46 @@ sc_screen_resize_to_pixel_perfect(struct sc_screen *screen) {
          content_size.width + UI_PANEL_WIDTH, content_size.height);
 }
 
+static bool
+sc_screen_is_control_event(const SDL_Event *event) {
+    switch (event->type) {
+        case SDL_TEXTINPUT:
+        case SDL_KEYDOWN:
+        case SDL_KEYUP:
+        case SDL_MOUSEMOTION:
+        case SDL_MOUSEBUTTONDOWN:
+        case SDL_MOUSEBUTTONUP:
+        case SDL_MOUSEWHEEL:
+        case SDL_FINGERMOTION:
+        case SDL_FINGERDOWN:
+        case SDL_FINGERUP:
+        case SDL_CONTROLLERDEVICEADDED:
+        case SDL_CONTROLLERDEVICEREMOVED:
+        case SDL_CONTROLLERAXISMOTION:
+        case SDL_CONTROLLERBUTTONDOWN:
+        case SDL_CONTROLLERBUTTONUP:
+        case SDL_DROPFILE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool
+sc_screen_is_copy_screenshot_shortcut(const SDL_Event *event) {
+    if (event->type != SDL_KEYDOWN || event->key.repeat) {
+        return false;
+    }
+
+    SDL_Keycode keycode = event->key.keysym.sym;
+    if (keycode != SDLK_c) {
+        return false;
+    }
+
+    SDL_Keymod mods = event->key.keysym.mod;
+    return (mods & KMOD_GUI) || (mods & KMOD_CTRL);
+}
+
 bool
 sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
     switch (event->type) {
@@ -1549,13 +1980,27 @@ sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
         }
     }
 
-    if (sc_screen_is_relative_mode(screen)
+    if (screen->video && !screen->input_enabled
+            && sc_screen_is_copy_screenshot_shortcut(event)) {
+        sc_screen_copy_screenshot_to_clipboard(screen);
+        sc_screen_animate_screenshot_button_flash(screen);
+        return true;
+    }
+
+    if (screen->video && !screen->input_enabled && sc_screen_is_control_event(event)) {
+        return true;
+    }
+
+    if (screen->input_enabled
+            && sc_screen_is_relative_mode(screen)
             && sc_mouse_capture_handle_event(&screen->mc, event)) {
         // The mouse capture handler consumed the event
         return true;
     }
 
-    sc_input_manager_handle_event(&screen->im, event);
+    if (screen->input_enabled || !sc_screen_is_control_event(event)) {
+        sc_input_manager_handle_event(&screen->im, event);
+    }
     return true;
 }
 
