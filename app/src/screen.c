@@ -998,6 +998,10 @@ sc_screen_render_current_state(struct sc_screen *screen, bool update_content) {
         return;
     }
 
+    if (!screen->window_focused) {
+        return;
+    }
+
     if (screen->has_frame) {
         sc_screen_render(screen, update_content);
     } else {
@@ -1014,7 +1018,8 @@ sc_screen_set_input_enabled(struct sc_screen *screen, bool enabled) {
     screen->input_enabled = enabled;
 
     bool capture_active = enabled && sc_screen_is_relative_mode(screen)
-                       && (!screen->video || screen->has_frame);
+                       && (!screen->video || screen->has_frame)
+                       && screen->window_focused;
     sc_mouse_capture_set_active(&screen->mc, capture_active);
 }
 
@@ -1340,6 +1345,7 @@ sc_screen_init(struct sc_screen *screen,
     screen->screenshot_button_feedback_active = false;
     screen->screenshot_button_feedback_start_ms = 0;
     screen->screenshot_button_feedback_progress = 0.0f;
+    screen->window_focused = true;
     screen->connection_state = SC_SCREEN_CONNECTION_CONNECTING;
     screen->fullscreen = false;
     screen->maximized = false;
@@ -1773,7 +1779,9 @@ sc_screen_apply_frame(struct sc_screen *screen) {
         }
     }
 
-    sc_screen_render(screen, false);
+    if (screen->window_focused) {
+        sc_screen_render(screen, false);
+    }
     return true;
 }
 
@@ -1852,7 +1860,9 @@ sc_screen_set_connection_state(struct sc_screen *screen,
             sc_mouse_capture_set_active(&screen->mc, false);
         }
 
-        sc_screen_render_idle(screen);
+        if (screen->window_focused) {
+            sc_screen_render_idle(screen);
+        }
         return;
     }
 
@@ -1872,7 +1882,8 @@ sc_screen_set_input_processors(struct sc_screen *screen,
 
     if (relative_mode != was_relative_mode) {
         bool active = screen->input_enabled && relative_mode
-                   && (!screen->video || screen->has_frame);
+                   && (!screen->video || screen->has_frame)
+                   && screen->window_focused;
         sc_mouse_capture_set_active(&screen->mc, active);
     }
 }
@@ -2038,6 +2049,20 @@ sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
                 case SDL_WINDOWEVENT_EXPOSED:
                 case SDL_WINDOWEVENT_SIZE_CHANGED:
                     sc_screen_render_current_state(screen, true);
+                    break;
+                case SDL_WINDOWEVENT_FOCUS_GAINED:
+                    screen->window_focused = true;
+                    if (screen->input_enabled && sc_screen_is_relative_mode(screen)
+                            && screen->has_frame) {
+                        sc_mouse_capture_set_active(&screen->mc, true);
+                    }
+                    sc_screen_render_current_state(screen, true);
+                    break;
+                case SDL_WINDOWEVENT_FOCUS_LOST:
+                    screen->window_focused = false;
+                    if (sc_screen_is_relative_mode(screen)) {
+                        sc_mouse_capture_set_active(&screen->mc, false);
+                    }
                     break;
                 case SDL_WINDOWEVENT_MAXIMIZED:
                     screen->maximized = true;
