@@ -2,9 +2,11 @@
 
 #include <assert.h>
 #include <ctype.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <SDL2/SDL.h>
 #include <libswscale/swscale.h>
 
@@ -27,6 +29,13 @@
 #define UI_BUTTON_HEIGHT 88
 #define UI_TOGGLE_BUTTON_SIZE 40
 #define UI_TOGGLE_TOP_OFFSET 20
+#define UI_SETTINGS_BUTTON_SIZE 40
+#define UI_SETTINGS_BOTTOM_OFFSET 20
+#define UI_SETTINGS_MENU_WIDTH 232
+#define UI_SETTINGS_MENU_ITEM_HEIGHT 32
+#define UI_SETTINGS_MENU_PADDING 8
+#define UI_SETTINGS_MENU_GAP 6
+#define UI_SETTINGS_MENU_MARGIN_RIGHT 10
 #define UI_BUTTON_ICON_SIZE 24
 #define UI_BUTTON_FEEDBACK_IN_MS 150
 #define UI_BUTTON_FEEDBACK_HOLD_MS 1000
@@ -40,6 +49,11 @@
 #define UI_SCREENSHOT_BUTTON_BG_PATH_ENV "SCRCPY_SCREENSHOT_BUTTON_BG_PATH"
 #define UI_INPUT_TOGGLE_ICON_PATH_ENV "SCRCPY_INPUT_TOGGLE_ICON_PATH"
 #define UI_INPUT_TOGGLE_BUTTON_BG_PATH_ENV "SCRCPY_INPUT_TOGGLE_BUTTON_BG_PATH"
+#define UI_SETTINGS_ICON_PATH_ENV "SCRCPY_SETTINGS_ICON_PATH"
+#define UI_SETTINGS_COPY_LABEL "COPY TO CLIPBOARD"
+#define UI_SETTINGS_SAVE_LABEL "SAVE IMAGE TO"
+#define UI_SETTINGS_FOLDER_LABEL "SELECT FOLDER"
+#define UI_SETTINGS_FOLDER_SET_LABEL "FOLDER SELECTED"
 
 #define DOWNCAST(SINK) container_of(SINK, struct sc_screen, frame_sink)
 
@@ -65,8 +79,15 @@ sc_screen_load_input_toggle_icon(struct sc_screen *screen);
 static bool
 sc_screen_load_input_toggle_button_bg(struct sc_screen *screen);
 
+static bool
+sc_screen_load_settings_icon(struct sc_screen *screen);
+
 static void
 sc_screen_set_input_enabled(struct sc_screen *screen, bool enabled);
+
+static void
+sc_screen_fill_rounded_rect(SDL_Renderer *renderer, const SDL_Rect *rect,
+                            int radius);
 
 static inline struct sc_size
 get_oriented_size(struct sc_size size, enum sc_orientation orientation) {
@@ -273,9 +294,14 @@ sc_screen_update_ui_rects(struct sc_screen *screen) {
         scale_window_to_drawable(screen, UI_TOGGLE_BUTTON_SIZE, true);
     int toggle_top =
         scale_window_to_drawable(screen, UI_TOGGLE_TOP_OFFSET, false);
+    int settings_button_size =
+        scale_window_to_drawable(screen, UI_SETTINGS_BUTTON_SIZE, true);
+    int settings_bottom =
+        scale_window_to_drawable(screen, UI_SETTINGS_BOTTOM_OFFSET, false);
     button_width = MIN(button_width, panel_width);
     button_height = MIN(button_height, drawable_size.height);
     toggle_button_size = MIN(toggle_button_size, panel_width);
+    settings_button_size = MIN(settings_button_size, panel_width);
 
     screen->screenshot_button_rect.x = screen->panel_rect.x
                                      + (panel_width - button_width) / 2;
@@ -287,6 +313,74 @@ sc_screen_update_ui_rects(struct sc_screen *screen) {
     screen->input_toggle_button_rect.y = toggle_top;
     screen->input_toggle_button_rect.w = toggle_button_size;
     screen->input_toggle_button_rect.h = toggle_button_size;
+
+    screen->settings_button_rect.x = screen->panel_rect.x
+                                   + (panel_width - settings_button_size) / 2;
+    screen->settings_button_rect.y =
+        MAX(0, drawable_size.height - settings_bottom - settings_button_size);
+    screen->settings_button_rect.w = settings_button_size;
+    screen->settings_button_rect.h = settings_button_size;
+
+    int menu_width = scale_window_to_drawable(screen, UI_SETTINGS_MENU_WIDTH,
+                                              true);
+    int menu_item_height =
+        scale_window_to_drawable(screen, UI_SETTINGS_MENU_ITEM_HEIGHT, false);
+    int menu_padding =
+        scale_window_to_drawable(screen, UI_SETTINGS_MENU_PADDING, true);
+    int menu_gap = scale_window_to_drawable(screen, UI_SETTINGS_MENU_GAP, false);
+    int menu_margin =
+        scale_window_to_drawable(screen, UI_SETTINGS_MENU_MARGIN_RIGHT, true);
+    menu_width = CLAMP(menu_width, 0, drawable_size.width);
+    menu_padding = MAX(0, menu_padding);
+    menu_gap = MAX(0, menu_gap);
+    menu_item_height = MAX(1, menu_item_height);
+    int menu_height =
+        menu_padding * 2 + menu_item_height * 3 + menu_gap * 2;
+
+    if (!show_panel || !menu_width || !menu_height) {
+        screen->settings_menu_rect = (SDL_Rect) {0, 0, 0, 0};
+        screen->settings_menu_copy_rect = (SDL_Rect) {0, 0, 0, 0};
+        screen->settings_menu_save_rect = (SDL_Rect) {0, 0, 0, 0};
+        screen->settings_menu_directory_rect = (SDL_Rect) {0, 0, 0, 0};
+        return;
+    }
+
+    int menu_x = screen->panel_rect.x - menu_margin - menu_width;
+    int menu_y =
+        screen->settings_button_rect.y + screen->settings_button_rect.h - menu_height;
+    menu_x = CLAMP(menu_x, 0, drawable_size.width - menu_width);
+    menu_y = CLAMP(menu_y, 0, drawable_size.height - menu_height);
+
+    screen->settings_menu_rect = (SDL_Rect) {
+        .x = menu_x,
+        .y = menu_y,
+        .w = menu_width,
+        .h = menu_height,
+    };
+
+    int item_x = menu_x + menu_padding;
+    int item_w = MAX(1, menu_width - 2 * menu_padding);
+    int item_y = menu_y + menu_padding;
+    screen->settings_menu_copy_rect = (SDL_Rect) {
+        .x = item_x,
+        .y = item_y,
+        .w = item_w,
+        .h = menu_item_height,
+    };
+    item_y += menu_item_height + menu_gap;
+    screen->settings_menu_save_rect = (SDL_Rect) {
+        .x = item_x,
+        .y = item_y,
+        .w = item_w,
+        .h = menu_item_height,
+    };
+    item_y += menu_item_height + menu_gap;
+    screen->settings_menu_directory_rect = (SDL_Rect) {
+        .x = item_x,
+        .y = item_y,
+        .w = item_w,
+        .h = menu_item_height,
+    };
 }
 
 static SDL_Rect
@@ -506,6 +600,34 @@ sc_screen_load_input_toggle_button_bg(struct sc_screen *screen) {
     return true;
 }
 
+static bool
+sc_screen_load_settings_icon(struct sc_screen *screen) {
+    const char *path = getenv(UI_SETTINGS_ICON_PATH_ENV);
+    if (!path || !*path) {
+        return true;
+    }
+
+    SDL_Surface *surface = scrcpy_icon_load_from_path(path);
+    if (!surface) {
+        LOGW("Could not load settings icon: %s", path);
+        return false;
+    }
+
+    SDL_Texture *texture =
+        SDL_CreateTextureFromSurface(screen->display.renderer, surface);
+    if (!texture) {
+        LOGW("Could not create settings icon texture: %s", SDL_GetError());
+        scrcpy_icon_destroy(surface);
+        return false;
+    }
+
+    screen->settings_icon = texture;
+    screen->settings_icon_width = surface->w;
+    screen->settings_icon_height = surface->h;
+    scrcpy_icon_destroy(surface);
+    return true;
+}
+
 // render the texture to the renderer
 //
 // Set the update_content_rect flag if the window or content size may have
@@ -539,6 +661,9 @@ sc_screen_get_button_glyph(char c) {
     static const uint8_t glyph_a[7] = {
         0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11,
     };
+    static const uint8_t glyph_b[7] = {
+        0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E,
+    };
     static const uint8_t glyph_c[7] = {
         0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E,
     };
@@ -547,6 +672,12 @@ sc_screen_get_button_glyph(char c) {
     };
     static const uint8_t glyph_e[7] = {
         0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F,
+    };
+    static const uint8_t glyph_f[7] = {
+        0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10,
+    };
+    static const uint8_t glyph_g[7] = {
+        0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0E,
     };
     static const uint8_t glyph_h[7] = {
         0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11,
@@ -562,6 +693,9 @@ sc_screen_get_button_glyph(char c) {
     };
     static const uint8_t glyph_o[7] = {
         0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E,
+    };
+    static const uint8_t glyph_m[7] = {
+        0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11,
     };
     static const uint8_t glyph_p[7] = {
         0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10,
@@ -587,18 +721,26 @@ sc_screen_get_button_glyph(char c) {
             return glyph_space;
         case 'A':
             return glyph_a;
+        case 'B':
+            return glyph_b;
         case 'C':
             return glyph_c;
         case 'D':
             return glyph_d;
         case 'E':
             return glyph_e;
+        case 'F':
+            return glyph_f;
+        case 'G':
+            return glyph_g;
         case 'H':
             return glyph_h;
         case 'I':
             return glyph_i;
         case 'L':
             return glyph_l;
+        case 'M':
+            return glyph_m;
         case 'N':
             return glyph_n;
         case 'O':
@@ -786,6 +928,105 @@ sc_screen_draw_toggle_icon(struct sc_screen *screen, const SDL_Rect *button) {
                    &dst);
 }
 
+static void
+sc_screen_draw_settings_icon(struct sc_screen *screen, const SDL_Rect *button) {
+    if (!screen->settings_icon) {
+        sc_screen_draw_text_centered(screen->display.renderer, button, "S",
+                                     40, 40, 48);
+        return;
+    }
+
+    int icon_w = scale_window_to_drawable(screen, UI_BUTTON_ICON_SIZE, true);
+    int icon_h = scale_window_to_drawable(screen, UI_BUTTON_ICON_SIZE, false);
+    icon_w = MIN(icon_w, button->w);
+    icon_h = MIN(icon_h, button->h);
+    if (!icon_w || !icon_h) {
+        return;
+    }
+
+    SDL_Rect dst = {
+        .x = button->x + (button->w - icon_w) / 2,
+        .y = button->y + (button->h - icon_h) / 2,
+        .w = icon_w,
+        .h = icon_h,
+    };
+
+    SDL_SetTextureColorMod(screen->settings_icon, 40, 40, 48);
+    SDL_RenderCopy(screen->display.renderer, screen->settings_icon, NULL, &dst);
+}
+
+static void
+sc_screen_draw_settings_menu_item(struct sc_screen *screen,
+                                  const SDL_Rect *rect, const char *label,
+                                  bool selected, bool hovered) {
+    uint8_t r = 63;
+    uint8_t g = 63;
+    uint8_t b = 67;
+    if (selected) {
+        r = 255;
+        g = 199;
+        b = 0;
+        if (hovered) {
+            r = 255;
+            g = 212;
+            b = 38;
+        }
+    } else if (hovered) {
+        r = 78;
+        g = 78;
+        b = 82;
+    }
+
+    SDL_SetRenderDrawColor(screen->display.renderer, r, g, b, 255);
+    sc_screen_fill_rounded_rect(screen->display.renderer, rect, rect->h / 2);
+
+    if (selected) {
+        sc_screen_draw_text_centered(screen->display.renderer, rect, label,
+                                     40, 40, 48);
+    } else {
+        sc_screen_draw_text_centered(screen->display.renderer, rect, label,
+                                     226, 227, 230);
+    }
+}
+
+static void
+sc_screen_draw_settings_menu(struct sc_screen *screen) {
+    if (!screen->settings_menu_open || !screen->settings_menu_rect.w) {
+        return;
+    }
+
+    SDL_SetRenderDrawColor(screen->display.renderer, 44, 44, 48, 255);
+    sc_screen_fill_rounded_rect(screen->display.renderer, &screen->settings_menu_rect,
+                                screen->settings_menu_rect.h / 8);
+
+    sc_screen_draw_settings_menu_item(screen, &screen->settings_menu_copy_rect,
+                                      UI_SETTINGS_COPY_LABEL,
+                                      screen->screenshot_action
+                                          == SC_SCREENSHOT_ACTION_COPY_TO_CLIPBOARD,
+                                      screen->settings_menu_copy_hovered);
+
+    sc_screen_draw_settings_menu_item(screen, &screen->settings_menu_save_rect,
+                                      UI_SETTINGS_SAVE_LABEL,
+                                      screen->screenshot_action
+                                          == SC_SCREENSHOT_ACTION_SAVE_TO_DIRECTORY,
+                                      screen->settings_menu_save_hovered);
+
+    const char *folder_label = screen->screenshot_directory[0]
+                             ? UI_SETTINGS_FOLDER_SET_LABEL
+                             : UI_SETTINGS_FOLDER_LABEL;
+    sc_screen_draw_settings_menu_item(screen, &screen->settings_menu_directory_rect,
+                                      folder_label, false,
+                                      screen->settings_menu_directory_hovered);
+}
+
+static void
+sc_screen_close_settings_menu(struct sc_screen *screen) {
+    screen->settings_menu_open = false;
+    screen->settings_menu_copy_hovered = false;
+    screen->settings_menu_save_hovered = false;
+    screen->settings_menu_directory_hovered = false;
+}
+
 static uint8_t
 sc_color_lerp(uint8_t from, uint8_t to, float t) {
     float mixed = from + (to - from) * t;
@@ -937,6 +1178,31 @@ sc_screen_draw_panel(struct sc_screen *screen) {
         sc_screen_fill_rounded_rect(renderer, &toggle, toggle.w / 2);
     }
     sc_screen_draw_toggle_icon(screen, &toggle);
+
+    SDL_Rect settings = screen->settings_button_rect;
+    uint8_t sr = 217;
+    uint8_t sg = 217;
+    uint8_t sb = 217;
+    if (screen->settings_button_pressed) {
+        sr = 201;
+        sg = 201;
+        sb = 201;
+    } else if (screen->settings_button_hovered || screen->settings_menu_open) {
+        sr = 229;
+        sg = 229;
+        sb = 229;
+    }
+
+    if (screen->input_toggle_button_bg) {
+        SDL_SetTextureColorMod(screen->input_toggle_button_bg, sr, sg, sb);
+        SDL_RenderCopy(renderer, screen->input_toggle_button_bg, NULL, &settings);
+    } else {
+        SDL_SetRenderDrawColor(renderer, sr, sg, sb, 255);
+        sc_screen_fill_rounded_rect(renderer, &settings, settings.w / 2);
+    }
+    sc_screen_draw_settings_icon(screen, &settings);
+
+    sc_screen_draw_settings_menu(screen);
 }
 
 static enum sc_display_result
@@ -1048,8 +1314,11 @@ sc_screen_animate_screenshot_button_feedback(struct sc_screen *screen) {
 }
 
 static bool
-sc_screen_copy_screenshot_to_clipboard(struct sc_screen *screen) {
+sc_screen_capture_screenshot_rgba(struct sc_screen *screen, uint8_t **pixels_out,
+                                  size_t *pitch_out, int *width_out,
+                                  int *height_out) {
     assert(screen->video);
+    assert(pixels_out && pitch_out && width_out && height_out);
 
     if (!screen->has_frame || !screen->frame) {
         LOGW("No video frame available to capture");
@@ -1100,25 +1369,153 @@ sc_screen_copy_screenshot_to_clipboard(struct sc_screen *screen) {
                         dst_data, dst_linesize);
     sws_freeContext(sws_ctx);
 
-    bool ok = false;
     if (ret <= 0) {
+        free(pixels);
         LOGW("Could not convert frame for screenshot");
-    } else {
-#ifdef __APPLE__
-        ok = sc_darwin_clipboard_set_image_rgba8888(pixels, pitch, width,
-                                                    height);
-        if (!ok) {
-            LOGW("Could not copy screenshot image to the macOS clipboard");
-        }
-#else
-        LOGW("Screenshot clipboard image is only implemented on macOS");
-#endif
+        return false;
     }
 
+    *pixels_out = pixels;
+    *pitch_out = pitch;
+    *width_out = width;
+    *height_out = height;
+    return true;
+}
+
+static bool
+sc_screen_copy_screenshot_to_clipboard(struct sc_screen *screen) {
+    assert(screen->video);
+
+    uint8_t *pixels = NULL;
+    size_t pitch = 0;
+    int width = 0;
+    int height = 0;
+    bool prepared =
+        sc_screen_capture_screenshot_rgba(screen, &pixels, &pitch, &width,
+                                          &height);
+    if (!prepared) {
+        return false;
+    }
+
+    bool ok = false;
+#ifdef __APPLE__
+    ok = sc_darwin_clipboard_set_image_rgba8888(pixels, pitch, width, height);
+    if (!ok) {
+        LOGW("Could not copy screenshot image to the macOS clipboard");
+    }
+#else
+    LOGW("Screenshot clipboard image is only implemented on macOS");
+#endif
     free(pixels);
 
     if (ok) {
         LOGI("Screenshot copied to clipboard (%dx%d)", width, height);
+    }
+    return ok;
+}
+
+static bool
+sc_screen_choose_screenshot_directory(struct sc_screen *screen) {
+#ifdef __APPLE__
+    char selected[sizeof(screen->screenshot_directory)] = {0};
+    bool ok = sc_darwin_choose_directory(selected, sizeof(selected));
+    if (!ok) {
+        return false;
+    }
+    snprintf(screen->screenshot_directory, sizeof(screen->screenshot_directory),
+             "%s", selected);
+    return true;
+#else
+    (void) screen;
+    return false;
+#endif
+}
+
+static bool
+sc_screen_save_screenshot_to_directory(struct sc_screen *screen) {
+    assert(screen->video);
+
+#ifndef __APPLE__
+    LOGW("Saving screenshots to files is only implemented on macOS");
+    return false;
+#else
+    if (!screen->screenshot_directory[0]
+            && !sc_screen_choose_screenshot_directory(screen)) {
+        return false;
+    }
+
+    uint8_t *pixels = NULL;
+    size_t pitch = 0;
+    int width = 0;
+    int height = 0;
+    bool prepared =
+        sc_screen_capture_screenshot_rgba(screen, &pixels, &pitch, &width,
+                                          &height);
+    if (!prepared) {
+        return false;
+    }
+
+    time_t now = time(NULL);
+    struct tm local_tm = {0};
+#ifdef _WIN32
+    localtime_s(&local_tm, &now);
+#else
+    localtime_r(&now, &local_tm);
+#endif
+    uint32_t millis = SDL_GetTicks() % 1000;
+
+    char filename[128];
+    snprintf(filename, sizeof(filename),
+             "screenshot_%04d%02d%02d_%02d%02d%02d_%03u_%dx%d.png",
+             local_tm.tm_year + 1900, local_tm.tm_mon + 1, local_tm.tm_mday,
+             local_tm.tm_hour, local_tm.tm_min, local_tm.tm_sec,
+             (unsigned) millis, width, height);
+
+    char output_path[sizeof(screen->screenshot_directory) + sizeof(filename) + 2];
+    int written = snprintf(output_path, sizeof(output_path), "%s/%s",
+                           screen->screenshot_directory, filename);
+    if (written < 0 || (size_t) written >= sizeof(output_path)) {
+        free(pixels);
+        LOGW("Screenshot output path is too long");
+        return false;
+    }
+
+    bool ok = sc_darwin_write_png_rgba8888(output_path, pixels, pitch, width,
+                                           height);
+    free(pixels);
+
+    if (!ok) {
+        LOGW("Could not save screenshot to %s", output_path);
+        return false;
+    }
+
+    LOGI("Screenshot saved to %s", output_path);
+    return true;
+#endif
+}
+
+static bool
+sc_screen_take_screenshot(struct sc_screen *screen, bool force_clipboard) {
+    enum sc_screenshot_action action = screen->screenshot_action;
+    if (force_clipboard) {
+        action = SC_SCREENSHOT_ACTION_COPY_TO_CLIPBOARD;
+    }
+
+    bool ok;
+    switch (action) {
+        case SC_SCREENSHOT_ACTION_COPY_TO_CLIPBOARD:
+            ok = sc_screen_copy_screenshot_to_clipboard(screen);
+            break;
+        case SC_SCREENSHOT_ACTION_SAVE_TO_DIRECTORY:
+            ok = sc_screen_save_screenshot_to_directory(screen);
+            break;
+        default:
+            ok = false;
+            break;
+    }
+
+    if (ok) {
+        sc_screen_animate_screenshot_button_feedback(screen);
     }
     return ok;
 }
@@ -1129,6 +1526,7 @@ sc_screen_handle_panel_event(struct sc_screen *screen, const SDL_Event *event) {
 
     sc_screen_update_ui_rects(screen);
     if (!screen->panel_rect.w) {
+        sc_screen_close_settings_menu(screen);
         return false;
     }
 
@@ -1140,19 +1538,45 @@ sc_screen_handle_panel_event(struct sc_screen *screen, const SDL_Event *event) {
             bool in_button = screen->has_frame
                           && point_in_rect(x, y, &screen->screenshot_button_rect);
             bool in_toggle = point_in_rect(x, y, &screen->input_toggle_button_rect);
+            bool in_settings = point_in_rect(x, y, &screen->settings_button_rect);
             bool in_panel = point_in_rect(x, y, &screen->panel_rect);
+            bool in_menu = screen->settings_menu_open
+                        && point_in_rect(x, y, &screen->settings_menu_rect);
+            bool in_menu_copy = in_menu
+                             && point_in_rect(x, y,
+                                              &screen->settings_menu_copy_rect);
+            bool in_menu_save = in_menu
+                             && point_in_rect(x, y,
+                                              &screen->settings_menu_save_rect);
+            bool in_menu_dir = in_menu
+                            && point_in_rect(x, y,
+                                             &screen->settings_menu_directory_rect);
 
             if (in_button != screen->screenshot_button_hovered
-                    || in_toggle != screen->input_toggle_button_hovered) {
+                    || in_toggle != screen->input_toggle_button_hovered
+                    || in_settings != screen->settings_button_hovered
+                    || in_menu_copy != screen->settings_menu_copy_hovered
+                    || in_menu_save != screen->settings_menu_save_hovered
+                    || in_menu_dir != screen->settings_menu_directory_hovered) {
                 screen->screenshot_button_hovered = in_button;
                 screen->input_toggle_button_hovered = in_toggle;
+                screen->settings_button_hovered = in_settings;
+                screen->settings_menu_copy_hovered = in_menu_copy;
+                screen->settings_menu_save_hovered = in_menu_save;
+                screen->settings_menu_directory_hovered = in_menu_dir;
                 if (!in_button) {
                     screen->screenshot_button_pressed = false;
                 }
                 if (!in_toggle) {
                     screen->input_toggle_button_pressed = false;
                 }
+                if (!in_settings) {
+                    screen->settings_button_pressed = false;
+                }
                 sc_screen_render_current_state(screen, false);
+            }
+            if (screen->settings_menu_open) {
+                return true;
             }
             return in_panel;
         }
@@ -1165,17 +1589,43 @@ sc_screen_handle_panel_event(struct sc_screen *screen, const SDL_Event *event) {
             bool in_button = screen->has_frame
                           && point_in_rect(x, y, &screen->screenshot_button_rect);
             bool in_toggle = point_in_rect(x, y, &screen->input_toggle_button_rect);
+            bool in_settings = point_in_rect(x, y, &screen->settings_button_rect);
+            bool in_menu = screen->settings_menu_open
+                        && point_in_rect(x, y, &screen->settings_menu_rect);
+            bool in_menu_copy = in_menu
+                             && point_in_rect(x, y,
+                                              &screen->settings_menu_copy_rect);
+            bool in_menu_save = in_menu
+                             && point_in_rect(x, y,
+                                              &screen->settings_menu_save_rect);
+            bool in_menu_dir = in_menu
+                            && point_in_rect(x, y,
+                                             &screen->settings_menu_directory_rect);
 
             if (event->button.button == SDL_BUTTON_LEFT) {
                 bool down = event->type == SDL_MOUSEBUTTONDOWN;
                 if (down && in_button) {
                     screen->screenshot_button_pressed = true;
+                    if (screen->settings_menu_open) {
+                        sc_screen_close_settings_menu(screen);
+                    }
                     sc_screen_render_current_state(screen, false);
                     return true;
                 }
                 if (down && in_toggle) {
                     screen->input_toggle_button_pressed = true;
+                    if (screen->settings_menu_open) {
+                        sc_screen_close_settings_menu(screen);
+                    }
                     sc_screen_render_current_state(screen, false);
+                    return true;
+                }
+                if (down && in_settings) {
+                    screen->settings_button_pressed = true;
+                    sc_screen_render_current_state(screen, false);
+                    return true;
+                }
+                if (down && screen->settings_menu_open) {
                     return true;
                 }
 
@@ -1184,8 +1634,7 @@ sc_screen_handle_panel_event(struct sc_screen *screen, const SDL_Event *event) {
                     screen->screenshot_button_pressed = false;
                     sc_screen_render_current_state(screen, false);
                     if (activate) {
-                        sc_screen_copy_screenshot_to_clipboard(screen);
-                        sc_screen_animate_screenshot_button_feedback(screen);
+                        sc_screen_take_screenshot(screen, false);
                     }
                     return true;
                 }
@@ -1198,15 +1647,56 @@ sc_screen_handle_panel_event(struct sc_screen *screen, const SDL_Event *event) {
                     sc_screen_render_current_state(screen, false);
                     return true;
                 }
+                if (!down && screen->settings_button_pressed) {
+                    bool activate = in_settings;
+                    screen->settings_button_pressed = false;
+                    if (activate) {
+                        screen->settings_menu_open = !screen->settings_menu_open;
+                        if (!screen->settings_menu_open) {
+                            sc_screen_close_settings_menu(screen);
+                        }
+                    }
+                    sc_screen_render_current_state(screen, false);
+                    return true;
+                }
+
+                if (!down && screen->settings_menu_open) {
+                    bool should_render = true;
+                    if (in_menu_copy) {
+                        screen->screenshot_action =
+                            SC_SCREENSHOT_ACTION_COPY_TO_CLIPBOARD;
+                        sc_screen_close_settings_menu(screen);
+                    } else if (in_menu_save) {
+                        screen->screenshot_action =
+                            SC_SCREENSHOT_ACTION_SAVE_TO_DIRECTORY;
+                        sc_screen_close_settings_menu(screen);
+                    } else if (in_menu_dir) {
+                        sc_screen_choose_screenshot_directory(screen);
+                        sc_screen_close_settings_menu(screen);
+                    } else {
+                        sc_screen_close_settings_menu(screen);
+                    }
+
+                    if (should_render) {
+                        sc_screen_render_current_state(screen, false);
+                    }
+                    return true;
+                }
             }
 
-            return in_panel;
+            if (screen->settings_menu_open) {
+                return true;
+            }
+            return in_panel || in_menu;
         }
         case SDL_MOUSEWHEEL: {
             int32_t x;
             int32_t y;
             SDL_GetMouseState(&x, &y);
             sc_screen_hidpi_scale_coords(screen, &x, &y);
+            if (screen->settings_menu_open) {
+                return true;
+            }
             return point_in_rect(x, y, &screen->panel_rect);
         }
         default:
@@ -1322,6 +1812,11 @@ sc_screen_init(struct sc_screen *screen,
     screen->panel_rect = (SDL_Rect) {0, 0, 0, 0};
     screen->screenshot_button_rect = (SDL_Rect) {0, 0, 0, 0};
     screen->input_toggle_button_rect = (SDL_Rect) {0, 0, 0, 0};
+    screen->settings_button_rect = (SDL_Rect) {0, 0, 0, 0};
+    screen->settings_menu_rect = (SDL_Rect) {0, 0, 0, 0};
+    screen->settings_menu_copy_rect = (SDL_Rect) {0, 0, 0, 0};
+    screen->settings_menu_save_rect = (SDL_Rect) {0, 0, 0, 0};
+    screen->settings_menu_directory_rect = (SDL_Rect) {0, 0, 0, 0};
     screen->screenshot_button_bg = NULL;
     screen->screenshot_button_bg_width = 0;
     screen->screenshot_button_bg_height = 0;
@@ -1337,11 +1832,22 @@ sc_screen_init(struct sc_screen *screen,
     screen->input_toggle_icon = NULL;
     screen->input_toggle_icon_width = 0;
     screen->input_toggle_icon_height = 0;
+    screen->settings_icon = NULL;
+    screen->settings_icon_width = 0;
+    screen->settings_icon_height = 0;
     screen->screenshot_button_hovered = false;
     screen->screenshot_button_pressed = false;
     screen->input_toggle_button_hovered = false;
     screen->input_toggle_button_pressed = false;
+    screen->settings_button_hovered = false;
+    screen->settings_button_pressed = false;
+    screen->settings_menu_open = false;
+    screen->settings_menu_copy_hovered = false;
+    screen->settings_menu_save_hovered = false;
+    screen->settings_menu_directory_hovered = false;
     screen->input_enabled = false;
+    screen->screenshot_action = SC_SCREENSHOT_ACTION_COPY_TO_CLIPBOARD;
+    screen->screenshot_directory[0] = '\0';
     screen->screenshot_button_feedback_active = false;
     screen->screenshot_button_feedback_start_ms = 0;
     screen->screenshot_button_feedback_progress = 0.0f;
@@ -1457,6 +1963,7 @@ sc_screen_init(struct sc_screen *screen,
     sc_screen_load_screenshot_icon(screen);
     sc_screen_load_screenshot_check_icon(screen);
     sc_screen_load_input_toggle_icon(screen);
+    sc_screen_load_settings_icon(screen);
 
     screen->frame = av_frame_alloc();
     if (!screen->frame) {
@@ -1609,6 +2116,9 @@ sc_screen_destroy(struct sc_screen *screen) {
     }
     if (screen->input_toggle_icon) {
         SDL_DestroyTexture(screen->input_toggle_icon);
+    }
+    if (screen->settings_icon) {
+        SDL_DestroyTexture(screen->settings_icon);
     }
     sc_display_destroy(&screen->display);
     av_frame_free(&screen->frame);
@@ -1853,6 +2363,9 @@ sc_screen_set_connection_state(struct sc_screen *screen,
         screen->screenshot_button_pressed = false;
         screen->input_toggle_button_hovered = false;
         screen->input_toggle_button_pressed = false;
+        screen->settings_button_hovered = false;
+        screen->settings_button_pressed = false;
+        sc_screen_close_settings_menu(screen);
         screen->screenshot_button_feedback_active = false;
         screen->screenshot_button_feedback_progress = 0.0f;
 
@@ -2112,8 +2625,7 @@ sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
 
     if (screen->video && !screen->input_enabled
             && sc_screen_is_copy_screenshot_shortcut(event)) {
-        sc_screen_copy_screenshot_to_clipboard(screen);
-        sc_screen_animate_screenshot_button_feedback(screen);
+        sc_screen_take_screenshot(screen, true);
         return true;
     }
 

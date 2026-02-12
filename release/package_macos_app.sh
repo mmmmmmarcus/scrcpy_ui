@@ -36,6 +36,25 @@ fi
 
 if [[ -f "app/data/icon.png" ]]; then
     cp "app/data/icon.png" "$APP_RESOURCES/icon.png"
+
+    ICONSET_DIR="$APP_RESOURCES/AppIcon.iconset"
+    rm -rf "$ICONSET_DIR"
+    mkdir -p "$ICONSET_DIR"
+
+    for size in 16 32 128 256 512; do
+        sips -s format png -z "$size" "$size" "app/data/icon.png" \
+            --out "$ICONSET_DIR/icon_${size}x${size}.png" >/dev/null
+        size2=$((size * 2))
+        sips -s format png -z "$size2" "$size2" "app/data/icon.png" \
+            --out "$ICONSET_DIR/icon_${size}x${size}@2x.png" >/dev/null
+    done
+
+    if command -v iconutil >/dev/null 2>&1; then
+        iconutil -c icns "$ICONSET_DIR" -o "$APP_RESOURCES/AppIcon.icns" \
+            >/dev/null
+    fi
+
+    rm -rf "$ICONSET_DIR"
 fi
 
 if [[ -f "app/data/img/photo_camera_wght300_24.png" ]]; then
@@ -72,6 +91,14 @@ if [[ -f "app/data/img/input_toggle_button_bg.png" ]]; then
        "$APP_RESOURCES/input_toggle_button_bg.png"
 fi
 
+if [[ -f "app/data/img/settings_wght300_24.svg" ]]; then
+    sips -s format png -z 256 256 "app/data/img/settings_wght300_24.svg" \
+        --out "$APP_RESOURCES/settings_wght300_24.png" >/dev/null
+elif [[ -f "app/data/img/settings_wght300_24.png" ]]; then
+    cp "app/data/img/settings_wght300_24.png" \
+       "$APP_RESOURCES/settings_wght300_24.png"
+fi
+
 cat > "$APP_MACOS/ScrcpyUI" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -103,6 +130,10 @@ fi
 
 if [[ -f "$RESOURCE_DIR/input_toggle_button_bg.png" ]]; then
     export SCRCPY_INPUT_TOGGLE_BUTTON_BG_PATH="$RESOURCE_DIR/input_toggle_button_bg.png"
+fi
+
+if [[ -f "$RESOURCE_DIR/settings_wght300_24.png" ]]; then
+    export SCRCPY_SETTINGS_ICON_PATH="$RESOURCE_DIR/settings_wght300_24.png"
 fi
 
 if [[ -f "$SELF_DIR/scrcpy-server" ]]; then
@@ -144,6 +175,8 @@ cat > "$APP_CONTENTS/Info.plist" <<'EOF'
   <string>APPL</string>
   <key>CFBundleExecutable</key>
   <string>ScrcpyUI</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>NSHighResolutionCapable</key>
   <true/>
 </dict>

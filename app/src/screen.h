@@ -31,6 +31,11 @@ enum sc_screen_connection_state {
     SC_SCREEN_CONNECTION_FAILED,
 };
 
+enum sc_screenshot_action {
+    SC_SCREENSHOT_ACTION_COPY_TO_CLIPBOARD,
+    SC_SCREENSHOT_ACTION_SAVE_TO_DIRECTORY,
+};
+
 struct sc_screen {
     struct sc_frame_sink frame_sink; // frame sink trait
 
@@ -72,6 +77,11 @@ struct sc_screen {
     struct SDL_Rect panel_rect;
     struct SDL_Rect screenshot_button_rect;
     struct SDL_Rect input_toggle_button_rect;
+    struct SDL_Rect settings_button_rect;
+    struct SDL_Rect settings_menu_rect;
+    struct SDL_Rect settings_menu_copy_rect;
+    struct SDL_Rect settings_menu_save_rect;
+    struct SDL_Rect settings_menu_directory_rect;
     SDL_Texture *screenshot_button_bg;
     uint16_t screenshot_button_bg_width;
     uint16_t screenshot_button_bg_height;
@@ -87,11 +97,22 @@ struct sc_screen {
     SDL_Texture *input_toggle_icon;
     uint16_t input_toggle_icon_width;
     uint16_t input_toggle_icon_height;
+    SDL_Texture *settings_icon;
+    uint16_t settings_icon_width;
+    uint16_t settings_icon_height;
     bool screenshot_button_hovered;
     bool screenshot_button_pressed;
     bool input_toggle_button_hovered;
     bool input_toggle_button_pressed;
+    bool settings_button_hovered;
+    bool settings_button_pressed;
+    bool settings_menu_open;
+    bool settings_menu_copy_hovered;
+    bool settings_menu_save_hovered;
+    bool settings_menu_directory_hovered;
     bool input_enabled;
+    enum sc_screenshot_action screenshot_action;
+    char screenshot_directory[1024];
     bool screenshot_button_feedback_active;
     uint32_t screenshot_button_feedback_start_ms;
     float screenshot_button_feedback_progress;
