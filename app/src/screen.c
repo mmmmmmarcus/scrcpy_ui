@@ -955,6 +955,7 @@ sc_screen_draw_settings_icon(struct sc_screen *screen, const SDL_Rect *button) {
     SDL_RenderCopy(screen->display.renderer, screen->settings_icon, NULL, &dst);
 }
 
+#ifndef __APPLE__
 static void
 sc_screen_draw_settings_menu_item(struct sc_screen *screen,
                                   const SDL_Rect *rect, const char *label,
@@ -1018,6 +1019,7 @@ sc_screen_draw_settings_menu(struct sc_screen *screen) {
                                       folder_label, false,
                                       screen->settings_menu_directory_hovered);
 }
+#endif
 
 static void
 sc_screen_close_settings_menu(struct sc_screen *screen) {
@@ -1202,7 +1204,9 @@ sc_screen_draw_panel(struct sc_screen *screen) {
     }
     sc_screen_draw_settings_icon(screen, &settings);
 
+#ifndef __APPLE__
     sc_screen_draw_settings_menu(screen);
+#endif
 }
 
 static enum sc_display_result
@@ -1651,10 +1655,45 @@ sc_screen_handle_panel_event(struct sc_screen *screen, const SDL_Event *event) {
                     bool activate = in_settings;
                     screen->settings_button_pressed = false;
                     if (activate) {
+#ifdef __APPLE__
+                        bool save_selected =
+                            screen->screenshot_action
+                                == SC_SCREENSHOT_ACTION_SAVE_TO_DIRECTORY
+                            && screen->screenshot_directory[0] != '\0';
+                        enum sc_darwin_settings_menu_action action =
+                            sc_darwin_window_show_settings_menu(
+                                screen->window, event->button.x,
+                                event->button.y,
+                                save_selected,
+                                screen->screenshot_directory[0]
+                                    ? screen->screenshot_directory
+                                    : NULL);
+                        switch (action) {
+                            case SC_DARWIN_SETTINGS_MENU_ACTION_COPY_TO_CLIPBOARD:
+                                screen->screenshot_action =
+                                    SC_SCREENSHOT_ACTION_COPY_TO_CLIPBOARD;
+                                break;
+                            case SC_DARWIN_SETTINGS_MENU_ACTION_SAVE_TO_DIRECTORY:
+                                if (screen->screenshot_directory[0]
+                                        || sc_screen_choose_screenshot_directory(
+                                               screen)) {
+                                    screen->screenshot_action =
+                                        SC_SCREENSHOT_ACTION_SAVE_TO_DIRECTORY;
+                                } else {
+                                    screen->screenshot_action =
+                                        SC_SCREENSHOT_ACTION_COPY_TO_CLIPBOARD;
+                                }
+                                break;
+                            case SC_DARWIN_SETTINGS_MENU_ACTION_NONE:
+                            default:
+                                break;
+                        }
+#else
                         screen->settings_menu_open = !screen->settings_menu_open;
                         if (!screen->settings_menu_open) {
                             sc_screen_close_settings_menu(screen);
                         }
+#endif
                     }
                     sc_screen_render_current_state(screen, false);
                     return true;
