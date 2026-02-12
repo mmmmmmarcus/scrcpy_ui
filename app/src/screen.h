@@ -117,6 +117,7 @@ struct sc_screen {
     uint32_t screenshot_button_feedback_start_ms;
     float screenshot_button_feedback_progress;
     bool window_focused;
+    bool secure_content_detected;
     enum sc_screen_connection_state connection_state;
     bool has_frame;
     bool fullscreen;

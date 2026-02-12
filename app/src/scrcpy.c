@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <inttypes.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +15,7 @@
 # include <windows.h>
 #endif
 
+#include "adb/adb.h"
 #include "audio_player.h"
 #include "controller.h"
 #include "decoder.h"
@@ -90,6 +92,111 @@ struct scrcpy {
     };
     struct sc_timeout timeout;
 };
+
+struct sc_secure_content_monitor {
+    sc_thread thread;
+    struct sc_intr intr;
+    const char *serial;
+    atomic_bool stopped;
+    bool reported;
+    bool last_bouncer_showing;
+};
+
+#define SC_SECURE_CONTENT_POLL_INTERVAL_MS 1200
+
+static bool
+sc_push_secure_content_event(bool detected) {
+    SDL_Event event = {
+        .user = {
+            .type = SC_EVENT_SCREEN_SECURE_CONTENT,
+            .code = detected ? 1 : 0,
+        },
+    };
+
+    int ret = SDL_PushEvent(&event);
+    if (ret != 1) {
+        if (ret < 0) {
+            LOGW("Could not post secure-content event: %s", SDL_GetError());
+        }
+        return false;
+    }
+
+    return true;
+}
+
+static int
+run_secure_content_monitor(void *data) {
+    struct sc_secure_content_monitor *monitor = data;
+
+    while (!atomic_load_explicit(&monitor->stopped, memory_order_relaxed)) {
+        bool bouncer_showing;
+        bool ok = sc_adb_is_keyguard_bouncer_showing(&monitor->intr,
+                                                     monitor->serial,
+                                                     &bouncer_showing);
+        if (ok) {
+            if (!monitor->reported
+                    || bouncer_showing != monitor->last_bouncer_showing) {
+                monitor->reported = true;
+                monitor->last_bouncer_showing = bouncer_showing;
+                sc_push_secure_content_event(bouncer_showing);
+            }
+        }
+
+        uint32_t slept_ms = 0;
+        while (slept_ms < SC_SECURE_CONTENT_POLL_INTERVAL_MS
+                && !atomic_load_explicit(&monitor->stopped,
+                                         memory_order_relaxed)) {
+            SDL_Delay(100);
+            slept_ms += 100;
+        }
+    }
+
+    return 0;
+}
+
+static bool
+sc_secure_content_monitor_init(struct sc_secure_content_monitor *monitor,
+                               const char *serial) {
+    assert(serial);
+
+    bool ok = sc_intr_init(&monitor->intr);
+    if (!ok) {
+        return false;
+    }
+
+    monitor->serial = serial;
+    monitor->reported = false;
+    monitor->last_bouncer_showing = false;
+    atomic_store_explicit(&monitor->stopped, false, memory_order_relaxed);
+    return true;
+}
+
+static bool
+sc_secure_content_monitor_start(struct sc_secure_content_monitor *monitor) {
+    bool ok = sc_thread_create(&monitor->thread, run_secure_content_monitor,
+                               "scrcpy-secure", monitor);
+    if (!ok) {
+        LOGW("Could not start secure-content monitor thread");
+        return false;
+    }
+    return true;
+}
+
+static void
+sc_secure_content_monitor_stop(struct sc_secure_content_monitor *monitor) {
+    atomic_store_explicit(&monitor->stopped, true, memory_order_relaxed);
+    sc_intr_interrupt(&monitor->intr);
+}
+
+static void
+sc_secure_content_monitor_join(struct sc_secure_content_monitor *monitor) {
+    sc_thread_join(&monitor->thread, NULL);
+}
+
+static void
+sc_secure_content_monitor_destroy(struct sc_secure_content_monitor *monitor) {
+    sc_intr_destroy(&monitor->intr);
+}
 
 #ifdef _WIN32
 static BOOL WINAPI windows_ctrl_handler(DWORD ctrl_type) {
@@ -565,8 +672,12 @@ scrcpy(struct scrcpy_options *options) {
         bool controller_started = false;
         bool timeout_initialized = false;
         bool timeout_started = false;
+        bool secure_monitor_initialized = false;
+        bool secure_monitor_started = false;
         bool retry = false;
         bool stop = false;
+
+        struct sc_secure_content_monitor secure_monitor;
 
         struct sc_acksync *acksync = NULL;
         struct sc_controller *controller = NULL;
@@ -685,6 +796,22 @@ scrcpy(struct scrcpy_options *options) {
 
         const char *serial = s->server.serial;
         assert(serial);
+
+        if (screen_initialized && options->video_playback) {
+            bool ok = sc_secure_content_monitor_init(&secure_monitor, serial);
+            if (ok) {
+                secure_monitor_initialized = true;
+                ok = sc_secure_content_monitor_start(&secure_monitor);
+                if (ok) {
+                    secure_monitor_started = true;
+                } else {
+                    sc_secure_content_monitor_destroy(&secure_monitor);
+                    secure_monitor_initialized = false;
+                }
+            } else {
+                LOGW("Could not initialize secure-content monitor");
+            }
+        }
 
         if (options->video_playback && options->control) {
             if (!sc_file_pusher_init(&s->file_pusher, serial,
@@ -1046,6 +1173,10 @@ aoa_complete:
         }
 
 session_end:
+        if (secure_monitor_started) {
+            sc_secure_content_monitor_stop(&secure_monitor);
+        }
+
         if (timeout_started) {
             sc_timeout_stop(&s->timeout);
         }
@@ -1099,6 +1230,13 @@ session_end:
         }
         if (timeout_initialized) {
             sc_timeout_destroy(&s->timeout);
+        }
+
+        if (secure_monitor_started) {
+            sc_secure_content_monitor_join(&secure_monitor);
+        }
+        if (secure_monitor_initialized) {
+            sc_secure_content_monitor_destroy(&secure_monitor);
         }
 
         if (video_demuxer_started) {

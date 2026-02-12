@@ -1,6 +1,7 @@
 #include "adb.h"
 
 #include <assert.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -729,6 +730,225 @@ sc_adb_getprop(struct sc_intr *intr, const char *serial, const char *prop,
     buf[len] = '\0';
 
     return strdup(buf);
+}
+
+static bool
+sc_parse_boolean_after_key(const char *text, const char *key, bool *out_value) {
+    static const char true_word[] = "true";
+    static const char false_word[] = "false";
+
+    size_t key_len = strlen(key);
+    const char *p = text;
+    while ((p = strstr(p, key))) {
+        const char *v = p + key_len;
+        while (*v == ' ' || *v == '\t') {
+            ++v;
+        }
+        if (*v == '=' || *v == ':') {
+            ++v;
+            while (*v == ' ' || *v == '\t') {
+                ++v;
+            }
+        }
+
+        if (*v == '1') {
+            *out_value = true;
+            return true;
+        }
+        if (*v == '0') {
+            *out_value = false;
+            return true;
+        }
+
+        bool match_true = true;
+        for (size_t i = 0; i < ARRAY_LEN(true_word) - 1; ++i) {
+            if (!v[i] || tolower((unsigned char) v[i]) != true_word[i]) {
+                match_true = false;
+                break;
+            }
+        }
+        if (match_true) {
+            *out_value = true;
+            return true;
+        }
+
+        bool match_false = true;
+        for (size_t i = 0; i < ARRAY_LEN(false_word) - 1; ++i) {
+            if (!v[i] || tolower((unsigned char) v[i]) != false_word[i]) {
+                match_false = false;
+                break;
+            }
+        }
+        if (match_false) {
+            *out_value = false;
+            return true;
+        }
+
+        p = v;
+    }
+
+    return false;
+}
+
+static bool
+sc_adb_parse_keyguard_showing(const char *output, bool *out_showing) {
+    if (sc_parse_boolean_after_key(output, "isStatusBarKeyguard=",
+                                   out_showing)) {
+        return true;
+    }
+
+    if (sc_parse_boolean_after_key(output, "mShowingLockscreen=",
+                                   out_showing)) {
+        return true;
+    }
+
+    if (sc_parse_boolean_after_key(output, "mKeyguardShowing=", out_showing)) {
+        return true;
+    }
+
+    const char *delegate = strstr(output, "KeyguardServiceDelegate");
+    if (delegate) {
+        if (sc_parse_boolean_after_key(delegate, "showing=", out_showing)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static char *
+sc_adb_read_output(struct sc_intr *intr, const char *const argv[],
+                   const char *cmd_name, size_t cap) {
+    sc_pipe pout;
+    sc_pid pid = sc_adb_execute_p(argv, SC_ADB_SILENT, &pout);
+    if (pid == SC_PROCESS_NONE) {
+        return NULL;
+    }
+
+    char *output = malloc(cap);
+    if (!output) {
+        LOG_OOM();
+        sc_pipe_close(pout);
+        process_check_success_intr(intr, pid, cmd_name, SC_ADB_SILENT);
+        return NULL;
+    }
+
+    ssize_t r = sc_pipe_read_all_intr(intr, pid, pout, output, cap - 1);
+    sc_pipe_close(pout);
+
+    bool ok = process_check_success_intr(intr, pid, cmd_name, SC_ADB_SILENT);
+    if (!ok || r < 0) {
+        free(output);
+        return NULL;
+    }
+
+    output[r] = '\0';
+    return output;
+}
+
+bool
+sc_adb_is_keyguard_showing(struct sc_intr *intr, const char *serial,
+                           bool *out_showing) {
+    assert(serial);
+    assert(out_showing);
+
+    const char *const argv[] =
+        SC_ADB_COMMAND("-s", serial, "shell", "dumpsys", "window", "policy");
+
+    enum { POLICY_OUTPUT_CAP = 128 * 1024 };
+    char *output = sc_adb_read_output(intr, argv, "adb shell dumpsys window policy",
+                                      POLICY_OUTPUT_CAP);
+    if (!output) {
+        return false;
+    }
+
+    bool parsed = sc_adb_parse_keyguard_showing(output, out_showing);
+    free(output);
+    return parsed;
+}
+
+static bool
+sc_adb_parse_keyguard_bouncer_showing(const char *output, bool *out_showing) {
+    if (sc_parse_boolean_after_key(output, "mBouncerVisible", out_showing)) {
+        return true;
+    }
+
+    if (sc_parse_boolean_after_key(output, "mBouncerShowing", out_showing)) {
+        return true;
+    }
+
+    if (sc_parse_boolean_after_key(output, "mPrimaryBouncerShowing",
+                                   out_showing)) {
+        return true;
+    }
+
+    if (sc_parse_boolean_after_key(output, "isPrimaryBouncerShowingOrWillBeShowing",
+                                   out_showing)) {
+        return true;
+    }
+
+    if (sc_parse_boolean_after_key(output, "bouncerIsOrWillShow", out_showing)) {
+        return true;
+    }
+
+    if (sc_parse_boolean_after_key(output, "isBouncerShowing()", out_showing)) {
+        return true;
+    }
+
+    if (sc_parse_boolean_after_key(output, "isBouncerShowing", out_showing)) {
+        return true;
+    }
+
+    if (sc_parse_boolean_after_key(output, "bouncerShowing", out_showing)) {
+        return true;
+    }
+
+    if (sc_parse_boolean_after_key(output, "mKeyguardBouncerShowing",
+                                   out_showing)) {
+        return true;
+    }
+
+    return false;
+}
+
+bool
+sc_adb_is_keyguard_bouncer_showing(struct sc_intr *intr, const char *serial,
+                                   bool *out_showing) {
+    assert(serial);
+    assert(out_showing);
+
+    // Primary source: SystemUI service dump (OEMs often expose bouncer state
+    // there, while "dumpsys statusbar" may be empty or trimmed).
+    const char *const systemui_argv[] = SC_ADB_COMMAND(
+        "-s", serial, "shell", "dumpsys", "activity", "service",
+        "com.android.systemui/.SystemUIService");
+    enum { SYSTEMUI_OUTPUT_CAP = 512 * 1024 };
+    char *output = sc_adb_read_output(intr, systemui_argv,
+                                      "adb shell dumpsys activity service "
+                                      "com.android.systemui/.SystemUIService",
+                                      SYSTEMUI_OUTPUT_CAP);
+    if (output) {
+        bool parsed = sc_adb_parse_keyguard_bouncer_showing(output, out_showing);
+        free(output);
+        if (parsed) {
+            return true;
+        }
+    }
+
+    // Fallback for AOSP/older builds.
+    const char *const statusbar_argv[] =
+        SC_ADB_COMMAND("-s", serial, "shell", "dumpsys", "statusbar");
+    enum { STATUSBAR_OUTPUT_CAP = 256 * 1024 };
+    output = sc_adb_read_output(intr, statusbar_argv,
+                                "adb shell dumpsys statusbar",
+                                STATUSBAR_OUTPUT_CAP);
+    if (!output) {
+        return false;
+    }
+
+    bool parsed = sc_adb_parse_keyguard_bouncer_showing(output, out_showing);
+    free(output);
+    return parsed;
 }
 
 char *

@@ -112,6 +112,24 @@ sc_adb_getprop(struct sc_intr *intr, const char *serial, const char *prop,
                unsigned flags);
 
 /**
+ * Query whether the keyguard (lockscreen) is currently showing.
+ *
+ * Return true on success and write the state to out_showing.
+ */
+bool
+sc_adb_is_keyguard_showing(struct sc_intr *intr, const char *serial,
+                           bool *out_showing);
+
+/**
+ * Query whether the keyguard password/PIN bouncer is currently showing.
+ *
+ * Return true on success and write the state to out_showing.
+ */
+bool
+sc_adb_is_keyguard_bouncer_showing(struct sc_intr *intr, const char *serial,
+                                   bool *out_showing);
+
+/**
  * Attempt to retrieve the device IP
  *
  * Return the IP as a string of the form "xxx.xxx.xxx.xxx", to be freed by the

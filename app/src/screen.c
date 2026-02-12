@@ -44,6 +44,7 @@
     (UI_BUTTON_FEEDBACK_IN_MS + UI_BUTTON_FEEDBACK_HOLD_MS \
      + UI_BUTTON_FEEDBACK_OUT_MS)
 #define UI_WAITING_LABEL "PLEASE CONNECT A DEVICE"
+#define UI_SECURE_LABEL "please unlcok your device"
 #define UI_SCREENSHOT_ICON_PATH_ENV "SCRCPY_SCREENSHOT_ICON_PATH"
 #define UI_SCREENSHOT_CHECK_ICON_PATH_ENV "SCRCPY_SCREENSHOT_CHECK_ICON_PATH"
 #define UI_SCREENSHOT_BUTTON_BG_PATH_ENV "SCRCPY_SCREENSHOT_BUTTON_BG_PATH"
@@ -685,6 +686,9 @@ sc_screen_get_button_glyph(char c) {
     static const uint8_t glyph_i[7] = {
         0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1F,
     };
+    static const uint8_t glyph_k[7] = {
+        0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11,
+    };
     static const uint8_t glyph_l[7] = {
         0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F,
     };
@@ -708,6 +712,9 @@ sc_screen_get_button_glyph(char c) {
     };
     static const uint8_t glyph_t[7] = {
         0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
+    };
+    static const uint8_t glyph_u[7] = {
+        0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E,
     };
     static const uint8_t glyph_v[7] = {
         0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04,
@@ -737,6 +744,8 @@ sc_screen_get_button_glyph(char c) {
             return glyph_h;
         case 'I':
             return glyph_i;
+        case 'K':
+            return glyph_k;
         case 'L':
             return glyph_l;
         case 'M':
@@ -753,6 +762,8 @@ sc_screen_get_button_glyph(char c) {
             return glyph_s;
         case 'T':
             return glyph_t;
+        case 'U':
+            return glyph_u;
         case 'V':
             return glyph_v;
         case 'Y':
@@ -1222,6 +1233,19 @@ sc_screen_draw_video(struct sc_screen *screen, bool update_content_rect) {
                                                    &screen->rect,
                                                    screen->orientation);
     if (res == SC_DISPLAY_RESULT_OK) {
+        if (screen->secure_content_detected) {
+            int label_h = MAX(12, scale_window_to_drawable(screen, 16, false));
+            SDL_Rect label_area = {
+                .x = 0,
+                .y = screen->rect.y + screen->rect.h / 2 - label_h / 2,
+                .w = screen->panel_rect.x,
+                .h = label_h,
+            };
+            label_area.y = CLAMP(label_area.y, 0,
+                                 MAX(0, screen->panel_rect.h - label_h));
+            sc_screen_draw_text_centered(screen->display.renderer, &label_area,
+                                         UI_SECURE_LABEL, 255, 255, 255);
+        }
         sc_screen_draw_panel(screen);
     }
     return res;
@@ -1891,6 +1915,7 @@ sc_screen_init(struct sc_screen *screen,
     screen->screenshot_button_feedback_start_ms = 0;
     screen->screenshot_button_feedback_progress = 0.0f;
     screen->window_focused = true;
+    screen->secure_content_detected = false;
     screen->connection_state = SC_SCREEN_CONNECTION_CONNECTING;
     screen->fullscreen = false;
     screen->maximized = false;
@@ -2398,6 +2423,7 @@ sc_screen_set_connection_state(struct sc_screen *screen,
     if (state != SC_SCREEN_CONNECTION_RUNNING) {
         screen->has_frame = false;
         screen->paused = false;
+        screen->secure_content_detected = false;
         screen->screenshot_button_hovered = false;
         screen->screenshot_button_pressed = false;
         screen->input_toggle_button_hovered = false;
@@ -2586,6 +2612,16 @@ sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
             if (!ok) {
                 LOGE("Frame update failed\n");
                 return false;
+            }
+            return true;
+        }
+        case SC_EVENT_SCREEN_SECURE_CONTENT: {
+            bool detected = event->user.code != 0;
+            if (screen->secure_content_detected != detected) {
+                screen->secure_content_detected = detected;
+                if (screen->video) {
+                    sc_screen_render_current_state(screen, false);
+                }
             }
             return true;
         }
