@@ -2940,6 +2940,43 @@ sc_screen_convert_window_to_frame_coords(struct sc_screen *screen,
     return sc_screen_convert_drawable_to_frame_coords(screen, x, y);
 }
 
+struct sc_point
+sc_screen_convert_window_to_frame_coords_tolerant(struct sc_screen *screen,
+                                                  int32_t x, int32_t y,
+                                                  int32_t tolerance) {
+    sc_screen_hidpi_scale_coords(screen, &x, &y);
+
+    if (tolerance > 0 && screen->rect.w > 0 && screen->rect.h > 0) {
+        int ww;
+        int wh;
+        int dw;
+        int dh;
+        SDL_GetWindowSize(screen->window, &ww, &wh);
+        SDL_GL_GetDrawableSize(screen->window, &dw, &dh);
+        if (ww > 0 && wh > 0) {
+            int tol_x = (int64_t) tolerance * dw / ww;
+            int tol_y = (int64_t) tolerance * dh / wh;
+            tol_x = MAX(0, tol_x);
+            tol_y = MAX(0, tol_y);
+
+            SDL_Rect expanded = {
+                .x = screen->rect.x - tol_x,
+                .y = screen->rect.y - tol_y,
+                .w = screen->rect.w + 2 * tol_x,
+                .h = screen->rect.h + 2 * tol_y,
+            };
+
+            bool in_tolerance = point_in_rect(x, y, &expanded);
+            if (in_tolerance) {
+                x = CLAMP(x, screen->rect.x, screen->rect.x + screen->rect.w - 1);
+                y = CLAMP(y, screen->rect.y, screen->rect.y + screen->rect.h - 1);
+            }
+        }
+    }
+
+    return sc_screen_convert_drawable_to_frame_coords(screen, x, y);
+}
+
 void
 sc_screen_hidpi_scale_coords(struct sc_screen *screen, int32_t *x, int32_t *y) {
     // take the HiDPI scaling (dw/ww and dh/wh) into account

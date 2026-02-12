@@ -12,6 +12,8 @@
 #include "shortcut_mod.h"
 #include "util/log.h"
 
+#define SC_EDGE_GESTURE_TOLERANCE 96
+
 void
 sc_input_manager_init(struct sc_input_manager *im,
                       const struct sc_input_manager_params *params) {
@@ -643,7 +645,8 @@ sc_input_manager_get_position(struct sc_input_manager *im, int32_t x,
 
     return (struct sc_position) {
         .screen_size = im->screen->frame_size,
-        .point = sc_screen_convert_window_to_frame_coords(im->screen, x, y),
+        .point = sc_screen_convert_window_to_frame_coords_tolerant(
+            im->screen, x, y, SC_EDGE_GESTURE_TOLERANCE),
     };
 }
 
@@ -673,8 +676,8 @@ sc_input_manager_process_mouse_motion(struct sc_input_manager *im,
     if (im->vfinger_down) {
         assert(!im->mp->relative_mode); // assert one more time
         struct sc_point mouse =
-           sc_screen_convert_window_to_frame_coords(im->screen, event->x,
-                                                    event->y);
+            sc_screen_convert_window_to_frame_coords_tolerant(
+                im->screen, event->x, event->y, SC_EDGE_GESTURE_TOLERANCE);
         struct sc_point vfinger = inverse_point(mouse, im->screen->frame_size,
                                                 im->vfinger_invert_x,
                                                 im->vfinger_invert_y);
@@ -873,8 +876,8 @@ sc_input_manager_process_mouse_button(struct sc_input_manager *im,
     // one-mod shortcuts are assigned to rotation and vertical tilt.
     if (change_vfinger) {
         struct sc_point mouse =
-            sc_screen_convert_window_to_frame_coords(im->screen, event->x,
-                                                                 event->y);
+            sc_screen_convert_window_to_frame_coords_tolerant(
+                im->screen, event->x, event->y, SC_EDGE_GESTURE_TOLERANCE);
         if (down) {
             // Ctrl  Shift     invert_x  invert_y
             // ----  ----- ==> --------  --------
