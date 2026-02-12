@@ -118,6 +118,12 @@ struct sc_screen {
     bool settings_menu_copy_hovered;
     bool settings_menu_save_hovered;
     bool settings_menu_directory_hovered;
+    bool sidebar_drag_armed;
+    bool sidebar_drag_active;
+    int32_t sidebar_drag_mouse_start_x;
+    int32_t sidebar_drag_mouse_start_y;
+    int32_t sidebar_drag_window_start_x;
+    int32_t sidebar_drag_window_start_y;
     bool input_enabled;
     enum sc_screenshot_action screenshot_action;
     char screenshot_directory[1024];

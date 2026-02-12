@@ -1620,12 +1620,55 @@ sc_screen_handle_panel_event(struct sc_screen *screen, const SDL_Event *event) {
 
     sc_screen_update_ui_rects(screen);
     if (!screen->panel_rect.w) {
+        screen->sidebar_drag_armed = false;
+        screen->sidebar_drag_active = false;
         sc_screen_close_settings_menu(screen);
         return false;
     }
 
     switch (event->type) {
         case SDL_MOUSEMOTION: {
+            if (screen->sidebar_drag_active) {
+                struct sc_point window_pos = get_window_position(screen);
+                int new_x = window_pos.x
+                          + (event->motion.x
+                             - screen->sidebar_drag_window_start_x);
+                int new_y = window_pos.y
+                          + (event->motion.y
+                             - screen->sidebar_drag_window_start_y);
+                SDL_SetWindowPosition(screen->window, new_x, new_y);
+                return true;
+            }
+
+            if (screen->sidebar_drag_armed
+                    && (event->motion.state & SDL_BUTTON_LMASK)) {
+                struct sc_point window_pos = get_window_position(screen);
+                int mouse_global_x = window_pos.x + event->motion.x;
+                int mouse_global_y = window_pos.y + event->motion.y;
+                int dx = mouse_global_x - screen->sidebar_drag_mouse_start_x;
+                int dy = mouse_global_y - screen->sidebar_drag_mouse_start_y;
+                if (abs(dx) >= 2 || abs(dy) >= 2) {
+                    screen->sidebar_drag_active = true;
+                    if (screen->screenshot_button_pressed
+                            || screen->input_toggle_button_pressed
+                            || screen->settings_button_pressed) {
+                        screen->screenshot_button_pressed = false;
+                        screen->input_toggle_button_pressed = false;
+                        screen->settings_button_pressed = false;
+                        sc_screen_render_current_state(screen, false);
+                    }
+
+                    int new_x = window_pos.x
+                              + (event->motion.x
+                                 - screen->sidebar_drag_window_start_x);
+                    int new_y = window_pos.y
+                              + (event->motion.y
+                                 - screen->sidebar_drag_window_start_y);
+                    SDL_SetWindowPosition(screen->window, new_x, new_y);
+                    return true;
+                }
+            }
+
             int32_t x = event->motion.x;
             int32_t y = event->motion.y;
             sc_screen_hidpi_scale_coords(screen, &x, &y);
@@ -1698,6 +1741,28 @@ sc_screen_handle_panel_event(struct sc_screen *screen, const SDL_Event *event) {
 
             if (event->button.button == SDL_BUTTON_LEFT) {
                 bool down = event->type == SDL_MOUSEBUTTONDOWN;
+                if (!down && screen->sidebar_drag_active) {
+                    screen->sidebar_drag_armed = false;
+                    screen->sidebar_drag_active = false;
+                    return true;
+                }
+
+                if (down && in_panel && !screen->settings_menu_open
+                        && !screen->fullscreen
+                        && !screen->maximized
+                        && !screen->minimized) {
+                    struct sc_point window_pos = get_window_position(screen);
+                    screen->sidebar_drag_armed = true;
+                    screen->sidebar_drag_mouse_start_x =
+                        window_pos.x + event->button.x;
+                    screen->sidebar_drag_mouse_start_y =
+                        window_pos.y + event->button.y;
+                    screen->sidebar_drag_window_start_x = event->button.x;
+                    screen->sidebar_drag_window_start_y = event->button.y;
+                } else if (down) {
+                    screen->sidebar_drag_armed = false;
+                }
+
                 if (down && in_button) {
                     screen->screenshot_button_pressed = true;
                     if (screen->settings_menu_open) {
@@ -1721,6 +1786,10 @@ sc_screen_handle_panel_event(struct sc_screen *screen, const SDL_Event *event) {
                 }
                 if (down && screen->settings_menu_open) {
                     return true;
+                }
+
+                if (!down) {
+                    screen->sidebar_drag_armed = false;
                 }
 
                 if (!down && screen->screenshot_button_pressed) {
@@ -1982,6 +2051,12 @@ sc_screen_init(struct sc_screen *screen,
     screen->settings_menu_copy_hovered = false;
     screen->settings_menu_save_hovered = false;
     screen->settings_menu_directory_hovered = false;
+    screen->sidebar_drag_armed = false;
+    screen->sidebar_drag_active = false;
+    screen->sidebar_drag_mouse_start_x = 0;
+    screen->sidebar_drag_mouse_start_y = 0;
+    screen->sidebar_drag_window_start_x = 0;
+    screen->sidebar_drag_window_start_y = 0;
     screen->input_enabled = false;
     screen->screenshot_action = SC_SCREENSHOT_ACTION_COPY_TO_CLIPBOARD;
     screen->screenshot_directory[0] = '\0';
@@ -2507,6 +2582,8 @@ sc_screen_set_connection_state(struct sc_screen *screen,
         screen->input_toggle_button_pressed = false;
         screen->settings_button_hovered = false;
         screen->settings_button_pressed = false;
+        screen->sidebar_drag_armed = false;
+        screen->sidebar_drag_active = false;
         sc_screen_close_settings_menu(screen);
         screen->screenshot_button_feedback_active = false;
         screen->screenshot_button_feedback_progress = 0.0f;
@@ -2725,6 +2802,8 @@ sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
                     break;
                 case SDL_WINDOWEVENT_FOCUS_LOST:
                     screen->window_focused = false;
+                    screen->sidebar_drag_armed = false;
+                    screen->sidebar_drag_active = false;
                     if (sc_screen_is_relative_mode(screen)) {
                         sc_mouse_capture_set_active(&screen->mc, false);
                     }
