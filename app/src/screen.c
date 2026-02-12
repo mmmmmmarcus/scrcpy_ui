@@ -16,6 +16,7 @@
 #include "util/log.h"
 #ifdef __APPLE__
 # include "sys/darwin/clipboard.h"
+# include "sys/darwin/font.h"
 # include "sys/darwin/window.h"
 #endif
 
@@ -43,8 +44,9 @@
 #define UI_BUTTON_FEEDBACK_DURATION_MS \
     (UI_BUTTON_FEEDBACK_IN_MS + UI_BUTTON_FEEDBACK_HOLD_MS \
      + UI_BUTTON_FEEDBACK_OUT_MS)
-#define UI_WAITING_LABEL "PLEASE CONNECT A DEVICE"
-#define UI_SECURE_LABEL "please unlcok your device"
+#define UI_STATUS_LABEL_HEIGHT 22
+#define UI_WAITING_LABEL "Please connect a device"
+#define UI_SECURE_LABEL "Please unlock on device"
 #define UI_SCREENSHOT_ICON_PATH_ENV "SCRCPY_SCREENSHOT_ICON_PATH"
 #define UI_SCREENSHOT_CHECK_ICON_PATH_ENV "SCRCPY_SCREENSHOT_CHECK_ICON_PATH"
 #define UI_SCREENSHOT_BUTTON_BG_PATH_ENV "SCRCPY_SCREENSHOT_BUTTON_BG_PATH"
@@ -55,6 +57,7 @@
 #define UI_SETTINGS_SAVE_LABEL "SAVE IMAGE TO"
 #define UI_SETTINGS_FOLDER_LABEL "SELECT FOLDER"
 #define UI_SETTINGS_FOLDER_SET_LABEL "FOLDER SELECTED"
+#define UI_FONT_PATH_ENV "SCRCPY_UI_FONT_PATH"
 
 #define DOWNCAST(SINK) container_of(SINK, struct sc_screen, frame_sink)
 
@@ -62,7 +65,7 @@ static void
 sc_screen_show_idle_window(struct sc_screen *screen);
 
 static void
-sc_screen_draw_text_centered(SDL_Renderer *renderer, const SDL_Rect *area,
+sc_screen_draw_text_centered(struct sc_screen *screen, const SDL_Rect *area,
                              const char *text, uint8_t r, uint8_t g, uint8_t b);
 
 static bool
@@ -645,14 +648,17 @@ sc_screen_draw_idle_placeholder(struct sc_screen *screen) {
     SDL_RenderFillRect(renderer, &mirror);
 
     if (screen->connection_state != SC_SCREEN_CONNECTION_RUNNING) {
+        int label_h =
+            MAX(12, scale_window_to_drawable(screen, UI_STATUS_LABEL_HEIGHT,
+                                             false));
         SDL_Rect label_area = {
             .x = 0,
-            .y = mirror.y + mirror.h / 2 - 14,
+            .y = mirror.y + mirror.h / 2 - label_h / 2,
             .w = screen->panel_rect.x,
-            .h = 28,
+            .h = label_h,
         };
-        sc_screen_draw_text_centered(renderer, &label_area, UI_WAITING_LABEL,
-                                     176, 183, 191);
+        sc_screen_draw_text_centered(screen, &label_area, UI_WAITING_LABEL,
+                                     255, 255, 255);
     }
 }
 
@@ -774,12 +780,73 @@ sc_screen_get_button_glyph(char c) {
 }
 
 static void
-sc_screen_draw_text_centered(SDL_Renderer *renderer, const SDL_Rect *area,
+sc_screen_draw_text_centered(struct sc_screen *screen, const SDL_Rect *area,
                              const char *text, uint8_t r, uint8_t g, uint8_t b) {
+    SDL_Renderer *renderer = screen->display.renderer;
     size_t len = strlen(text);
     if (!len || !area->w || !area->h) {
         return;
     }
+
+#ifdef __APPLE__
+    const char *font_path = getenv(UI_FONT_PATH_ENV);
+    if (font_path && *font_path) {
+        int point_size = CLAMP(area->h * 3 / 4, 8, 96);
+        bool cache_hit = screen->text_cache_texture
+                      && screen->text_cache_point_size == point_size
+                      && screen->text_cache_r == r
+                      && screen->text_cache_g == g
+                      && screen->text_cache_b == b
+                      && !strcmp(screen->text_cache_value, text);
+
+        if (!cache_hit) {
+            if (screen->text_cache_texture) {
+                SDL_DestroyTexture(screen->text_cache_texture);
+                screen->text_cache_texture = NULL;
+            }
+
+            uint16_t tex_w = 0;
+            uint16_t tex_h = 0;
+            SDL_Texture *texture = sc_darwin_font_create_text_texture(
+                renderer, font_path, text, r, g, b, point_size, &tex_w, &tex_h);
+            if (texture) {
+                screen->text_cache_texture = texture;
+                screen->text_cache_width = tex_w;
+                screen->text_cache_height = tex_h;
+                screen->text_cache_point_size = point_size;
+                screen->text_cache_r = r;
+                screen->text_cache_g = g;
+                screen->text_cache_b = b;
+                snprintf(screen->text_cache_value,
+                         sizeof(screen->text_cache_value), "%s", text);
+            }
+        }
+
+        if (screen->text_cache_texture
+                && screen->text_cache_width
+                && screen->text_cache_height) {
+            int tex_w = screen->text_cache_width;
+            int tex_h = screen->text_cache_height;
+            bool fit_width = (int64_t) area->w * tex_h
+                           <= (int64_t) area->h * tex_w;
+            SDL_Rect dst;
+            if (fit_width) {
+                dst.w = area->w;
+                dst.h = (int64_t) area->w * tex_h / tex_w;
+                dst.x = area->x;
+                dst.y = area->y + (area->h - dst.h) / 2;
+            } else {
+                dst.h = area->h;
+                dst.w = (int64_t) area->h * tex_w / tex_h;
+                dst.x = area->x + (area->w - dst.w) / 2;
+                dst.y = area->y;
+            }
+
+            SDL_RenderCopy(renderer, screen->text_cache_texture, NULL, &dst);
+            return;
+        }
+    }
+#endif
 
     int padding = MAX(2, area->h / 8);
     int max_scale_w =
@@ -942,8 +1009,7 @@ sc_screen_draw_toggle_icon(struct sc_screen *screen, const SDL_Rect *button) {
 static void
 sc_screen_draw_settings_icon(struct sc_screen *screen, const SDL_Rect *button) {
     if (!screen->settings_icon) {
-        sc_screen_draw_text_centered(screen->display.renderer, button, "S",
-                                     40, 40, 48);
+        sc_screen_draw_text_centered(screen, button, "S", 40, 40, 48);
         return;
     }
 
@@ -993,11 +1059,9 @@ sc_screen_draw_settings_menu_item(struct sc_screen *screen,
     sc_screen_fill_rounded_rect(screen->display.renderer, rect, rect->h / 2);
 
     if (selected) {
-        sc_screen_draw_text_centered(screen->display.renderer, rect, label,
-                                     40, 40, 48);
+        sc_screen_draw_text_centered(screen, rect, label, 40, 40, 48);
     } else {
-        sc_screen_draw_text_centered(screen->display.renderer, rect, label,
-                                     226, 227, 230);
+        sc_screen_draw_text_centered(screen, rect, label, 226, 227, 230);
     }
 }
 
@@ -1234,7 +1298,9 @@ sc_screen_draw_video(struct sc_screen *screen, bool update_content_rect) {
                                                    screen->orientation);
     if (res == SC_DISPLAY_RESULT_OK) {
         if (screen->secure_content_detected) {
-            int label_h = MAX(12, scale_window_to_drawable(screen, 16, false));
+            int label_h =
+                MAX(12, scale_window_to_drawable(screen, UI_STATUS_LABEL_HEIGHT,
+                                                 false));
             SDL_Rect label_area = {
                 .x = 0,
                 .y = screen->rect.y + screen->rect.h / 2 - label_h / 2,
@@ -1243,8 +1309,8 @@ sc_screen_draw_video(struct sc_screen *screen, bool update_content_rect) {
             };
             label_area.y = CLAMP(label_area.y, 0,
                                  MAX(0, screen->panel_rect.h - label_h));
-            sc_screen_draw_text_centered(screen->display.renderer, &label_area,
-                                         UI_SECURE_LABEL, 255, 255, 255);
+            sc_screen_draw_text_centered(screen, &label_area, UI_SECURE_LABEL,
+                                         255, 255, 255);
         }
         sc_screen_draw_panel(screen);
     }
@@ -1898,6 +1964,14 @@ sc_screen_init(struct sc_screen *screen,
     screen->settings_icon = NULL;
     screen->settings_icon_width = 0;
     screen->settings_icon_height = 0;
+    screen->text_cache_texture = NULL;
+    screen->text_cache_width = 0;
+    screen->text_cache_height = 0;
+    screen->text_cache_point_size = 0;
+    screen->text_cache_r = 0;
+    screen->text_cache_g = 0;
+    screen->text_cache_b = 0;
+    screen->text_cache_value[0] = '\0';
     screen->screenshot_button_hovered = false;
     screen->screenshot_button_pressed = false;
     screen->input_toggle_button_hovered = false;
@@ -2183,6 +2257,9 @@ sc_screen_destroy(struct sc_screen *screen) {
     }
     if (screen->settings_icon) {
         SDL_DestroyTexture(screen->settings_icon);
+    }
+    if (screen->text_cache_texture) {
+        SDL_DestroyTexture(screen->text_cache_texture);
     }
     sc_display_destroy(&screen->display);
     av_frame_free(&screen->frame);

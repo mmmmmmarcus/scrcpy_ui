@@ -99,6 +99,10 @@ elif [[ -f "app/data/img/settings_wght300_24.png" ]]; then
        "$APP_RESOURCES/settings_wght300_24.png"
 fi
 
+if [[ -f "app/data/img/Ndot-55.otf" ]]; then
+    cp "app/data/img/Ndot-55.otf" "$APP_RESOURCES/Ndot-55.otf"
+fi
+
 cat > "$APP_MACOS/ScrcpyUI" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -134,6 +138,10 @@ fi
 
 if [[ -f "$RESOURCE_DIR/settings_wght300_24.png" ]]; then
     export SCRCPY_SETTINGS_ICON_PATH="$RESOURCE_DIR/settings_wght300_24.png"
+fi
+
+if [[ -f "$RESOURCE_DIR/Ndot-55.otf" ]]; then
+    export SCRCPY_UI_FONT_PATH="$RESOURCE_DIR/Ndot-55.otf"
 fi
 
 if [[ -f "$SELF_DIR/scrcpy-server" ]]; then

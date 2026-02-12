@@ -100,6 +100,14 @@ struct sc_screen {
     SDL_Texture *settings_icon;
     uint16_t settings_icon_width;
     uint16_t settings_icon_height;
+    SDL_Texture *text_cache_texture;
+    uint16_t text_cache_width;
+    uint16_t text_cache_height;
+    uint16_t text_cache_point_size;
+    uint8_t text_cache_r;
+    uint8_t text_cache_g;
+    uint8_t text_cache_b;
+    char text_cache_value[128];
     bool screenshot_button_hovered;
     bool screenshot_button_pressed;
     bool input_toggle_button_hovered;

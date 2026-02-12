@@ -88,6 +88,7 @@ else
     if host_machine.system() == 'darwin'
         src += [
             'src/sys/darwin/clipboard.m',
+            'src/sys/darwin/font.m',
             'src/sys/darwin/window.m',
         ]
         conf.set('_DARWIN_C_SOURCE', true)
