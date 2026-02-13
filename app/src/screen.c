@@ -2150,7 +2150,9 @@ sc_screen_init(struct sc_screen *screen,
 
     SDL_Surface *icon = scrcpy_icon_load();
     if (icon) {
+#ifndef __APPLE__
         SDL_SetWindowIcon(screen->window, icon);
+#endif
     } else if (params->video) {
         // just a warning
         LOGW("Could not load icon");
