@@ -13,6 +13,7 @@
 #include "controller.h"
 #include "coords.h"
 #include "display.h"
+#include "figma_bridge.h"
 #include "fps_counter.h"
 #include "frame_buffer.h"
 #include "input_manager.h"
@@ -34,6 +35,7 @@ enum sc_screen_connection_state {
 enum sc_screenshot_action {
     SC_SCREENSHOT_ACTION_COPY_TO_CLIPBOARD,
     SC_SCREENSHOT_ACTION_SAVE_TO_DIRECTORY,
+    SC_SCREENSHOT_ACTION_SEND_TO_FIGMA_BRIDGE,
 };
 
 struct sc_screen {
@@ -81,6 +83,7 @@ struct sc_screen {
     struct SDL_Rect settings_menu_rect;
     struct SDL_Rect settings_menu_copy_rect;
     struct SDL_Rect settings_menu_save_rect;
+    struct SDL_Rect settings_menu_figma_rect;
     struct SDL_Rect settings_menu_directory_rect;
     SDL_Texture *screenshot_button_bg;
     uint16_t screenshot_button_bg_width;
@@ -117,6 +120,7 @@ struct sc_screen {
     bool settings_menu_open;
     bool settings_menu_copy_hovered;
     bool settings_menu_save_hovered;
+    bool settings_menu_figma_hovered;
     bool settings_menu_directory_hovered;
     bool sidebar_drag_armed;
     bool sidebar_drag_active;
@@ -127,6 +131,8 @@ struct sc_screen {
     bool input_enabled;
     enum sc_screenshot_action screenshot_action;
     char screenshot_directory[1024];
+    bool figma_bridge_ready;
+    struct sc_figma_bridge figma_bridge;
     bool screenshot_button_feedback_active;
     uint32_t screenshot_button_feedback_start_ms;
     float screenshot_button_feedback_progress;

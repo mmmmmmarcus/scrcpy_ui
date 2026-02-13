@@ -7,6 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef __APPLE__
+# include <unistd.h>
+#endif
 #include <SDL2/SDL.h>
 #include <libswscale/swscale.h>
 
@@ -55,9 +58,11 @@
 #define UI_SETTINGS_ICON_PATH_ENV "SCRCPY_SETTINGS_ICON_PATH"
 #define UI_SETTINGS_COPY_LABEL "COPY TO CLIPBOARD"
 #define UI_SETTINGS_SAVE_LABEL "SAVE IMAGE TO"
+#define UI_SETTINGS_FIGMA_LABEL "SEND TO FIGMA BRIDGE"
 #define UI_SETTINGS_FOLDER_LABEL "SELECT FOLDER"
 #define UI_SETTINGS_FOLDER_SET_LABEL "FOLDER SELECTED"
 #define UI_FONT_PATH_ENV "SCRCPY_UI_FONT_PATH"
+#define FIGMA_BRIDGE_PORT 27184
 
 #define DOWNCAST(SINK) container_of(SINK, struct sc_screen, frame_sink)
 
@@ -339,12 +344,13 @@ sc_screen_update_ui_rects(struct sc_screen *screen) {
     menu_gap = MAX(0, menu_gap);
     menu_item_height = MAX(1, menu_item_height);
     int menu_height =
-        menu_padding * 2 + menu_item_height * 3 + menu_gap * 2;
+        menu_padding * 2 + menu_item_height * 4 + menu_gap * 3;
 
     if (!show_panel || !menu_width || !menu_height) {
         screen->settings_menu_rect = (SDL_Rect) {0, 0, 0, 0};
         screen->settings_menu_copy_rect = (SDL_Rect) {0, 0, 0, 0};
         screen->settings_menu_save_rect = (SDL_Rect) {0, 0, 0, 0};
+        screen->settings_menu_figma_rect = (SDL_Rect) {0, 0, 0, 0};
         screen->settings_menu_directory_rect = (SDL_Rect) {0, 0, 0, 0};
         return;
     }
@@ -373,6 +379,13 @@ sc_screen_update_ui_rects(struct sc_screen *screen) {
     };
     item_y += menu_item_height + menu_gap;
     screen->settings_menu_save_rect = (SDL_Rect) {
+        .x = item_x,
+        .y = item_y,
+        .w = item_w,
+        .h = menu_item_height,
+    };
+    item_y += menu_item_height + menu_gap;
+    screen->settings_menu_figma_rect = (SDL_Rect) {
         .x = item_x,
         .y = item_y,
         .w = item_w,
@@ -1087,6 +1100,12 @@ sc_screen_draw_settings_menu(struct sc_screen *screen) {
                                           == SC_SCREENSHOT_ACTION_SAVE_TO_DIRECTORY,
                                       screen->settings_menu_save_hovered);
 
+    sc_screen_draw_settings_menu_item(screen, &screen->settings_menu_figma_rect,
+                                      UI_SETTINGS_FIGMA_LABEL,
+                                      screen->screenshot_action
+                                          == SC_SCREENSHOT_ACTION_SEND_TO_FIGMA_BRIDGE,
+                                      screen->settings_menu_figma_hovered);
+
     const char *folder_label = screen->screenshot_directory[0]
                              ? UI_SETTINGS_FOLDER_SET_LABEL
                              : UI_SETTINGS_FOLDER_LABEL;
@@ -1101,6 +1120,7 @@ sc_screen_close_settings_menu(struct sc_screen *screen) {
     screen->settings_menu_open = false;
     screen->settings_menu_copy_hovered = false;
     screen->settings_menu_save_hovered = false;
+    screen->settings_menu_figma_hovered = false;
     screen->settings_menu_directory_hovered = false;
 }
 
@@ -1589,6 +1609,117 @@ sc_screen_save_screenshot_to_directory(struct sc_screen *screen) {
 }
 
 static bool
+sc_screen_read_binary_file(const char *path, uint8_t **data_out,
+                           size_t *size_out) {
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        return false;
+    }
+
+    if (fseek(file, 0, SEEK_END)) {
+        fclose(file);
+        return false;
+    }
+
+    long file_size = ftell(file);
+    if (file_size <= 0) {
+        fclose(file);
+        return false;
+    }
+
+    if (fseek(file, 0, SEEK_SET)) {
+        fclose(file);
+        return false;
+    }
+
+    size_t size = (size_t) file_size;
+    uint8_t *data = malloc(size);
+    if (!data) {
+        fclose(file);
+        LOG_OOM();
+        return false;
+    }
+
+    size_t r = fread(data, 1, size, file);
+    fclose(file);
+    if (r != size) {
+        free(data);
+        return false;
+    }
+
+    *data_out = data;
+    *size_out = size;
+    return true;
+}
+
+static bool
+sc_screen_send_screenshot_to_figma_bridge(struct sc_screen *screen) {
+    assert(screen->video);
+
+#ifndef __APPLE__
+    (void) screen;
+    LOGW("Figma Bridge is only implemented on macOS");
+    return false;
+#else
+    if (!screen->figma_bridge_ready) {
+        LOGW("Figma Bridge is unavailable");
+        return false;
+    }
+
+    uint8_t *pixels = NULL;
+    size_t pitch = 0;
+    int width = 0;
+    int height = 0;
+    bool prepared =
+        sc_screen_capture_screenshot_rgba(screen, &pixels, &pitch, &width,
+                                          &height);
+    if (!prepared) {
+        return false;
+    }
+
+    char tmp_path[] = "/tmp/scrcpy_ui_figma_bridge_XXXXXX";
+    int fd = mkstemp(tmp_path);
+    if (fd == -1) {
+        free(pixels);
+        LOGW("Could not create temporary file for Figma Bridge screenshot");
+        return false;
+    }
+    close(fd);
+
+    bool saved = sc_darwin_write_png_rgba8888(tmp_path, pixels, pitch, width,
+                                              height);
+    free(pixels);
+    if (!saved) {
+        unlink(tmp_path);
+        LOGW("Could not encode screenshot for Figma Bridge");
+        return false;
+    }
+
+    uint8_t *png_data = NULL;
+    size_t png_size = 0;
+    bool read_ok = sc_screen_read_binary_file(tmp_path, &png_data, &png_size);
+    unlink(tmp_path);
+    if (!read_ok) {
+        LOGW("Could not read Figma Bridge screenshot data");
+        return false;
+    }
+
+    bool ok =
+        sc_figma_bridge_publish_png(&screen->figma_bridge, png_data, png_size,
+                                    (uint16_t) width, (uint16_t) height);
+    free(png_data);
+    if (!ok) {
+        LOGW("Could not queue screenshot to Figma Bridge");
+        return false;
+    }
+
+    LOGI("Screenshot queued to Figma Bridge (http://127.0.0.1:%u/scrcpy-bridge/latest)",
+         (unsigned) sc_figma_bridge_get_port(&screen->figma_bridge));
+    return true;
+#endif
+}
+
+static bool
 sc_screen_take_screenshot(struct sc_screen *screen, bool force_clipboard) {
     enum sc_screenshot_action action = screen->screenshot_action;
     if (force_clipboard) {
@@ -1602,6 +1733,9 @@ sc_screen_take_screenshot(struct sc_screen *screen, bool force_clipboard) {
             break;
         case SC_SCREENSHOT_ACTION_SAVE_TO_DIRECTORY:
             ok = sc_screen_save_screenshot_to_directory(screen);
+            break;
+        case SC_SCREENSHOT_ACTION_SEND_TO_FIGMA_BRIDGE:
+            ok = sc_screen_send_screenshot_to_figma_bridge(screen);
             break;
         default:
             ok = false;
@@ -1685,6 +1819,9 @@ sc_screen_handle_panel_event(struct sc_screen *screen, const SDL_Event *event) {
             bool in_menu_save = in_menu
                              && point_in_rect(x, y,
                                               &screen->settings_menu_save_rect);
+            bool in_menu_figma = in_menu
+                              && point_in_rect(x, y,
+                                               &screen->settings_menu_figma_rect);
             bool in_menu_dir = in_menu
                             && point_in_rect(x, y,
                                              &screen->settings_menu_directory_rect);
@@ -1694,12 +1831,14 @@ sc_screen_handle_panel_event(struct sc_screen *screen, const SDL_Event *event) {
                     || in_settings != screen->settings_button_hovered
                     || in_menu_copy != screen->settings_menu_copy_hovered
                     || in_menu_save != screen->settings_menu_save_hovered
+                    || in_menu_figma != screen->settings_menu_figma_hovered
                     || in_menu_dir != screen->settings_menu_directory_hovered) {
                 screen->screenshot_button_hovered = in_button;
                 screen->input_toggle_button_hovered = in_toggle;
                 screen->settings_button_hovered = in_settings;
                 screen->settings_menu_copy_hovered = in_menu_copy;
                 screen->settings_menu_save_hovered = in_menu_save;
+                screen->settings_menu_figma_hovered = in_menu_figma;
                 screen->settings_menu_directory_hovered = in_menu_dir;
                 if (!in_button) {
                     screen->screenshot_button_pressed = false;
@@ -1735,6 +1874,9 @@ sc_screen_handle_panel_event(struct sc_screen *screen, const SDL_Event *event) {
             bool in_menu_save = in_menu
                              && point_in_rect(x, y,
                                               &screen->settings_menu_save_rect);
+            bool in_menu_figma = in_menu
+                              && point_in_rect(x, y,
+                                               &screen->settings_menu_figma_rect);
             bool in_menu_dir = in_menu
                             && point_in_rect(x, y,
                                              &screen->settings_menu_directory_rect);
@@ -1819,11 +1961,15 @@ sc_screen_handle_panel_event(struct sc_screen *screen, const SDL_Event *event) {
                             screen->screenshot_action
                                 == SC_SCREENSHOT_ACTION_SAVE_TO_DIRECTORY
                             && screen->screenshot_directory[0] != '\0';
+                        bool figma_selected =
+                            screen->screenshot_action
+                                == SC_SCREENSHOT_ACTION_SEND_TO_FIGMA_BRIDGE;
                         enum sc_darwin_settings_menu_action action =
                             sc_darwin_window_show_settings_menu(
                                 screen->window, event->button.x,
                                 event->button.y,
                                 save_selected,
+                                figma_selected,
                                 screen->screenshot_directory[0]
                                     ? screen->screenshot_directory
                                     : NULL);
@@ -1842,6 +1988,10 @@ sc_screen_handle_panel_event(struct sc_screen *screen, const SDL_Event *event) {
                                     screen->screenshot_action =
                                         SC_SCREENSHOT_ACTION_COPY_TO_CLIPBOARD;
                                 }
+                                break;
+                            case SC_DARWIN_SETTINGS_MENU_ACTION_SEND_TO_FIGMA_BRIDGE:
+                                screen->screenshot_action =
+                                    SC_SCREENSHOT_ACTION_SEND_TO_FIGMA_BRIDGE;
                                 break;
                             case SC_DARWIN_SETTINGS_MENU_ACTION_NONE:
                             default:
@@ -1867,6 +2017,10 @@ sc_screen_handle_panel_event(struct sc_screen *screen, const SDL_Event *event) {
                     } else if (in_menu_save) {
                         screen->screenshot_action =
                             SC_SCREENSHOT_ACTION_SAVE_TO_DIRECTORY;
+                        sc_screen_close_settings_menu(screen);
+                    } else if (in_menu_figma) {
+                        screen->screenshot_action =
+                            SC_SCREENSHOT_ACTION_SEND_TO_FIGMA_BRIDGE;
                         sc_screen_close_settings_menu(screen);
                     } else if (in_menu_dir) {
                         sc_screen_choose_screenshot_directory(screen);
@@ -2014,6 +2168,7 @@ sc_screen_init(struct sc_screen *screen,
     screen->settings_menu_rect = (SDL_Rect) {0, 0, 0, 0};
     screen->settings_menu_copy_rect = (SDL_Rect) {0, 0, 0, 0};
     screen->settings_menu_save_rect = (SDL_Rect) {0, 0, 0, 0};
+    screen->settings_menu_figma_rect = (SDL_Rect) {0, 0, 0, 0};
     screen->settings_menu_directory_rect = (SDL_Rect) {0, 0, 0, 0};
     screen->screenshot_button_bg = NULL;
     screen->screenshot_button_bg_width = 0;
@@ -2050,6 +2205,7 @@ sc_screen_init(struct sc_screen *screen,
     screen->settings_menu_open = false;
     screen->settings_menu_copy_hovered = false;
     screen->settings_menu_save_hovered = false;
+    screen->settings_menu_figma_hovered = false;
     screen->settings_menu_directory_hovered = false;
     screen->sidebar_drag_armed = false;
     screen->sidebar_drag_active = false;
@@ -2060,6 +2216,7 @@ sc_screen_init(struct sc_screen *screen,
     screen->input_enabled = false;
     screen->screenshot_action = SC_SCREENSHOT_ACTION_COPY_TO_CLIPBOARD;
     screen->screenshot_directory[0] = '\0';
+    screen->figma_bridge_ready = false;
     screen->screenshot_button_feedback_active = false;
     screen->screenshot_button_feedback_start_ms = 0;
     screen->screenshot_button_feedback_progress = 0.0f;
@@ -2223,6 +2380,23 @@ sc_screen_init(struct sc_screen *screen,
 #endif
 
     if (screen->video) {
+        bool bridge_initialized =
+            sc_figma_bridge_init(&screen->figma_bridge, FIGMA_BRIDGE_PORT);
+        if (bridge_initialized) {
+            bool bridge_started = sc_figma_bridge_start(&screen->figma_bridge);
+            if (bridge_started) {
+                screen->figma_bridge_ready = true;
+            } else {
+                sc_figma_bridge_destroy(&screen->figma_bridge);
+            }
+        }
+
+        if (!screen->figma_bridge_ready) {
+            LOGW("Could not start Figma Bridge endpoint");
+        }
+    }
+
+    if (screen->video) {
         sc_screen_show_idle_window(screen);
     } else if (screen->input_enabled && sc_screen_is_relative_mode(screen)) {
         // Capture mouse immediately if video mirroring is disabled
@@ -2317,6 +2491,11 @@ sc_screen_destroy(struct sc_screen *screen) {
 #ifndef NDEBUG
     assert(!screen->open);
 #endif
+    if (screen->figma_bridge_ready) {
+        sc_figma_bridge_stop(&screen->figma_bridge);
+        sc_figma_bridge_destroy(&screen->figma_bridge);
+        screen->figma_bridge_ready = false;
+    }
     if (screen->screenshot_button_bg) {
         SDL_DestroyTexture(screen->screenshot_button_bg);
     }

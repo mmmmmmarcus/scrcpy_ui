@@ -63,6 +63,7 @@ sc_darwin_window_configure_native_chrome(SDL_Window *window) {
 enum sc_darwin_settings_menu_action
 sc_darwin_window_show_settings_menu(SDL_Window *window, int32_t x, int32_t y,
                                     bool save_selected,
+                                    bool figma_selected,
                                     const char *save_directory) {
     NSWindow *ns_window = sc_darwin_window_get_native_window(window);
     if (!ns_window) {
@@ -80,7 +81,7 @@ sc_darwin_window_show_settings_menu(SDL_Window *window, int32_t x, int32_t y,
         NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Settings"];
 
         NSMenuItem *section_item =
-            [[NSMenuItem alloc] initWithTitle:@"screenshot detination"
+            [[NSMenuItem alloc] initWithTitle:@"Screenshot destination"
                                        action:nil
                                 keyEquivalent:@""];
         section_item.enabled = NO;
@@ -94,8 +95,9 @@ sc_darwin_window_show_settings_menu(SDL_Window *window, int32_t x, int32_t y,
                                 keyEquivalent:@""];
         copy_item.target = target;
         copy_item.tag = SC_DARWIN_SETTINGS_MENU_ACTION_COPY_TO_CLIPBOARD;
-        copy_item.state = save_selected ? NSControlStateValueOff
-                                        : NSControlStateValueOn;
+        copy_item.state = (!save_selected && !figma_selected)
+                        ? NSControlStateValueOn
+                        : NSControlStateValueOff;
         [menu addItem:copy_item];
         [copy_item release];
 
@@ -122,6 +124,17 @@ sc_darwin_window_show_settings_menu(SDL_Window *window, int32_t x, int32_t y,
         [menu addItem:save_item];
         [save_item release];
 
+        NSMenuItem *figma_item =
+            [[NSMenuItem alloc] initWithTitle:@"Send to Figma Bridge"
+                                       action:@selector(onMenuItem:)
+                                keyEquivalent:@""];
+        figma_item.target = target;
+        figma_item.tag = SC_DARWIN_SETTINGS_MENU_ACTION_SEND_TO_FIGMA_BRIDGE;
+        figma_item.state = figma_selected ? NSControlStateValueOn
+                                          : NSControlStateValueOff;
+        [menu addItem:figma_item];
+        [figma_item release];
+
         NSRect bounds = [content_view bounds];
         NSPoint location = NSMakePoint((CGFloat) x,
                                        bounds.size.height - (CGFloat) y);
@@ -137,6 +150,8 @@ sc_darwin_window_show_settings_menu(SDL_Window *window, int32_t x, int32_t y,
                 return SC_DARWIN_SETTINGS_MENU_ACTION_COPY_TO_CLIPBOARD;
             case SC_DARWIN_SETTINGS_MENU_ACTION_SAVE_TO_DIRECTORY:
                 return SC_DARWIN_SETTINGS_MENU_ACTION_SAVE_TO_DIRECTORY;
+            case SC_DARWIN_SETTINGS_MENU_ACTION_SEND_TO_FIGMA_BRIDGE:
+                return SC_DARWIN_SETTINGS_MENU_ACTION_SEND_TO_FIGMA_BRIDGE;
             default:
                 return SC_DARWIN_SETTINGS_MENU_ACTION_NONE;
         }

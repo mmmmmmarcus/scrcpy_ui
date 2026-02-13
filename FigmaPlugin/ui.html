@@ -1,0 +1,329 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>ScrcpyUI Figma Bridge</title>
+  <style>
+    :root {
+      --bg: #323232;
+      --card: #484848;
+      --text: #ffffff;
+      --dot: #777777;
+      --ok: #57d695;
+      --warn: #f0b45b;
+      --err: #f57979;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+    }
+
+    body {
+      padding: 16px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Ndot 55", "SF Mono", Menlo, Monaco, monospace;
+      font-style: normal;
+      user-select: none;
+      overflow: hidden;
+    }
+
+    .root {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .main-card {
+      position: relative;
+      width: 256px;
+      height: 256px;
+      border-radius: 12px;
+      background: var(--card);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      flex: 0 0 auto;
+    }
+
+    .illustration-shell {
+      width: 88px;
+      height: 88px;
+      position: relative;
+      overflow: hidden;
+      flex: 0 0 auto;
+    }
+
+    .illustration {
+      position: absolute;
+      top: 2px;
+      left: 18px;
+      width: 52px;
+      height: 84px;
+      display: block;
+    }
+
+    .title {
+      margin: 0;
+      font-size: 16px;
+      line-height: 1;
+      color: var(--text);
+      letter-spacing: 0;
+      text-align: center;
+    }
+
+    .corner-dot {
+      position: absolute;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--dot);
+    }
+
+    .dot-top-left {
+      top: 12px;
+      left: 12px;
+    }
+
+    .dot-top-right {
+      top: 12px;
+      right: 12px;
+      transition: background-color 120ms linear, box-shadow 120ms linear;
+    }
+
+    .dot-bottom-left {
+      bottom: 12px;
+      left: 12px;
+    }
+
+    .dot-bottom-right {
+      bottom: 12px;
+      right: 12px;
+    }
+
+    .stitching {
+      width: 132px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--card);
+      flex: 0 0 auto;
+    }
+
+    .endpoint-card {
+      width: 100%;
+      flex: 0 0 auto;
+      background: var(--card);
+      border-radius: 12px;
+      padding: 12px 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .endpoint {
+      margin: 0;
+      font-size: 12px;
+      line-height: 1;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    body[data-state="active"] .dot-top-right {
+      background: var(--ok);
+      box-shadow: 0 0 0 2px rgba(87, 214, 149, 0.22);
+    }
+
+    body[data-state="waiting"] .dot-top-right {
+      background: var(--warn);
+      box-shadow: 0 0 0 2px rgba(240, 180, 91, 0.2);
+    }
+
+    body[data-state="error"] .dot-top-right {
+      background: var(--err);
+      box-shadow: 0 0 0 2px rgba(245, 121, 121, 0.2);
+    }
+  </style>
+</head>
+<body data-state="waiting">
+  <main class="root">
+    <section class="main-card">
+      <div class="illustration-shell">
+        <img
+          class="illustration"
+          src="assets/illustration.svg"
+          alt=""
+          aria-hidden="true"
+        />
+      </div>
+      <p id="title" class="title">Starting Bridge...</p>
+
+      <span class="corner-dot dot-top-left" aria-hidden="true"></span>
+      <span id="status-led" class="corner-dot dot-top-right" aria-hidden="true"></span>
+      <span class="corner-dot dot-bottom-left" aria-hidden="true"></span>
+      <span class="corner-dot dot-bottom-right" aria-hidden="true"></span>
+    </section>
+
+    <div class="stitching" aria-hidden="true"></div>
+
+    <section class="endpoint-card">
+      <p class="endpoint">127.0.0.1/scrcpy-bridge/latest</p>
+    </section>
+  </main>
+
+  <script>
+    const titleEl = document.getElementById('title');
+
+    // Keep the visible endpoint simple; fallback to explicit port internally.
+    const ENDPOINTS = [
+      'http://127.0.0.1/scrcpy-bridge/latest',
+      'http://127.0.0.1:27184/scrcpy-bridge/latest',
+    ];
+
+    let timer = null;
+    let afterSeq = 0;
+    let activeEndpoint = null;
+    let transientLabelUntil = 0;
+
+    function setState(state, label) {
+      document.body.dataset.state = state;
+      if (Date.now() >= transientLabelUntil) {
+        titleEl.textContent = label;
+      }
+    }
+
+    function setTransientLabel(label, durationMs) {
+      transientLabelUntil = Date.now() + durationMs;
+      titleEl.textContent = label;
+    }
+
+    function base64ToBytes(base64) {
+      const raw = atob(base64);
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i += 1) {
+        bytes[i] = raw.charCodeAt(i);
+      }
+      return bytes;
+    }
+
+    async function fetchFromEndpoint(endpoint) {
+      const join = endpoint.includes('?') ? '&' : '?';
+      const url = `${endpoint}${join}after=${afterSeq}`;
+      return fetch(url, { method: 'GET', cache: 'no-store' });
+    }
+
+    async function fetchBridgeUpdate() {
+      if (activeEndpoint) {
+        return fetchFromEndpoint(activeEndpoint);
+      }
+
+      for (const endpoint of ENDPOINTS) {
+        try {
+          const res = await fetchFromEndpoint(endpoint);
+          if (res.status === 204 || res.ok) {
+            activeEndpoint = endpoint;
+            return res;
+          }
+        } catch (_) {
+          // try next endpoint
+        }
+      }
+
+      throw new Error('Bridge unreachable');
+    }
+
+    async function pollOnce() {
+      let response;
+      try {
+        response = await fetchBridgeUpdate();
+      } catch (_) {
+        setState('waiting', 'Waiting for Bridge...');
+        return;
+      }
+
+      if (response.status === 204) {
+        setState('active', 'Scrcpy Bridge Running');
+        return;
+      }
+
+      if (!response.ok) {
+        setState('error', 'Bridge Error');
+        return;
+      }
+
+      let payload;
+      try {
+        payload = await response.json();
+      } catch (_) {
+        setState('error', 'Bridge Error');
+        return;
+      }
+
+      if (!payload || typeof payload.seq !== 'number' || !payload.png_base64) {
+        setState('error', 'Bridge Error');
+        return;
+      }
+
+      if (payload.seq <= afterSeq) {
+        setState('active', 'Scrcpy Bridge Running');
+        return;
+      }
+
+      const bytes = base64ToBytes(payload.png_base64);
+      parent.postMessage(
+        {
+          pluginMessage: {
+            type: 'insert-screenshot',
+            seq: payload.seq,
+            width: payload.width,
+            height: payload.height,
+            bytes: Array.from(bytes),
+          },
+        },
+        '*'
+      );
+
+      afterSeq = payload.seq;
+      setState('active', 'Scrcpy Bridge Running');
+      setTransientLabel(`Sending Screenshot #${afterSeq}`, 1000);
+    }
+
+    window.onmessage = (event) => {
+      const msg = event.data.pluginMessage;
+      if (!msg) {
+        return;
+      }
+
+      if (msg.type === 'inserted') {
+        setState('active', 'Scrcpy Bridge Running');
+        setTransientLabel(`Inserted #${msg.seq}`, 900);
+      } else if (msg.type === 'insert-error') {
+        setState('error', 'Insert Failed');
+      }
+    };
+
+    function startAutoPolling() {
+      if (timer) {
+        return;
+      }
+      timer = setInterval(pollOnce, 1200);
+      pollOnce();
+    }
+
+    // Start automatically and keep running until the plugin window is closed.
+    startAutoPolling();
+  </script>
+</body>
+</html>

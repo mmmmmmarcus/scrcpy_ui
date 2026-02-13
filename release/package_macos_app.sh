@@ -36,8 +36,13 @@ if command -v adb >/dev/null 2>&1; then
     cp "$(command -v adb)" "$APP_MACOS/adb"
 fi
 
-if [[ -f "$PROJECT_ROOT/app/data/icon.png" ]]; then
-    cp "$PROJECT_ROOT/app/data/icon.png" "$APP_RESOURCES/icon.png"
+ICON_SOURCE="$PROJECT_ROOT/app/data/BundleIcon.png"
+if [[ ! -f "$ICON_SOURCE" ]]; then
+    ICON_SOURCE="$PROJECT_ROOT/app/data/icon.png"
+fi
+
+if [[ -f "$ICON_SOURCE" ]]; then
+    cp "$ICON_SOURCE" "$APP_RESOURCES/icon.png"
 
     ICONSET_DIR="$APP_RESOURCES/AppIcon.iconset"
     rm -rf "$ICONSET_DIR"
@@ -45,11 +50,11 @@ if [[ -f "$PROJECT_ROOT/app/data/icon.png" ]]; then
 
     for size in 16 32 128 256 512; do
         sips -s format png -z "$size" "$size" \
-            "$PROJECT_ROOT/app/data/icon.png" \
+            "$ICON_SOURCE" \
             --out "$ICONSET_DIR/icon_${size}x${size}.png" >/dev/null
         size2=$((size * 2))
         sips -s format png -z "$size2" "$size2" \
-            "$PROJECT_ROOT/app/data/icon.png" \
+            "$ICON_SOURCE" \
             --out "$ICONSET_DIR/icon_${size}x${size}@2x.png" >/dev/null
     done
 
