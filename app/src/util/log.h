@@ -38,4 +38,9 @@ sc_log_windows_error(const char *prefix, int error);
 void
 sc_log_configure(void);
 
+// Return a heap-allocated copy of current session logs.
+// The caller must free() the returned pointer.
+char *
+sc_log_get_session_text(void);
+
 #endif

@@ -4,10 +4,93 @@
 # include <windows.h>
 #endif
 #include <assert.h>
+#include <string.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <SDL2/SDL_atomic.h>
 #include <libavutil/log.h>
+
+#define SC_SESSION_LOG_MAX_LENGTH (1 << 20) // 1 MiB
+#define SC_SESSION_LOG_INITIAL_CAPACITY 4096
+
+static SDL_SpinLock sc_session_log_lock = 0;
+static char *sc_session_log;
+static size_t sc_session_log_len;
+static size_t sc_session_log_cap;
+
+static bool
+sc_session_log_reserve(size_t required) {
+    if (required <= sc_session_log_cap) {
+        return true;
+    }
+
+    size_t new_cap = sc_session_log_cap
+        ? sc_session_log_cap
+        : SC_SESSION_LOG_INITIAL_CAPACITY;
+    while (new_cap < required) {
+        new_cap *= 2;
+    }
+
+    char *new_buf = realloc(sc_session_log, new_cap);
+    if (!new_buf) {
+        return false;
+    }
+
+    sc_session_log = new_buf;
+    sc_session_log_cap = new_cap;
+    return true;
+}
+
+static void
+sc_session_log_trim(size_t append_len) {
+    size_t required = sc_session_log_len + append_len;
+    if (required <= SC_SESSION_LOG_MAX_LENGTH) {
+        return;
+    }
+
+    size_t drop = required - SC_SESSION_LOG_MAX_LENGTH;
+    if (drop >= sc_session_log_len) {
+        sc_session_log_len = 0;
+        return;
+    }
+
+    // Trim full lines when possible.
+    while (drop < sc_session_log_len && sc_session_log[drop] != '\n') {
+        ++drop;
+    }
+    if (drop < sc_session_log_len) {
+        ++drop; // include '\n'
+    }
+
+    memmove(sc_session_log, &sc_session_log[drop], sc_session_log_len - drop);
+    sc_session_log_len -= drop;
+}
+
+static void
+sc_session_log_append(const char *prio_name, const char *message) {
+    size_t prio_len = strlen(prio_name);
+    size_t message_len = strlen(message);
+    size_t line_len = prio_len + 2 + message_len + 1; // "PRIO: MSG\n"
+
+    SDL_AtomicLock(&sc_session_log_lock);
+
+    sc_session_log_trim(line_len);
+
+    size_t required = sc_session_log_len + line_len + 1;
+    bool ok = sc_session_log_reserve(required);
+    if (ok) {
+        char *dst = &sc_session_log[sc_session_log_len];
+        memcpy(dst, prio_name, prio_len);
+        memcpy(&dst[prio_len], ": ", 2);
+        memcpy(&dst[prio_len + 2], message, message_len);
+        dst[prio_len + 2 + message_len] = '\n';
+        sc_session_log_len += line_len;
+        sc_session_log[sc_session_log_len] = '\0';
+    }
+
+    SDL_AtomicUnlock(&sc_session_log_lock);
+}
 
 static SDL_LogPriority
 log_level_sc_to_sdl(enum sc_log_level level) {
@@ -146,6 +229,7 @@ sc_sdl_log_print(void *userdata, int category, SDL_LogPriority priority,
     FILE *out = priority < SDL_LOG_PRIORITY_WARN ? stdout : stderr;
     assert(priority < SDL_NUM_LOG_PRIORITIES);
     const char *prio_name = sc_sdl_log_priority_names[priority];
+    sc_session_log_append(prio_name, message);
     fprintf(out, "%s: %s\n", prio_name, message);
 }
 
@@ -154,4 +238,21 @@ sc_log_configure(void) {
     SDL_LogSetOutputFunction(sc_sdl_log_print, NULL);
     // Redirect FFmpeg logs to SDL logs
     av_log_set_callback(sc_av_log_callback);
+}
+
+char *
+sc_log_get_session_text(void) {
+    SDL_AtomicLock(&sc_session_log_lock);
+
+    size_t len = sc_session_log_len;
+    char *copy = malloc(len + 1);
+    if (copy) {
+        if (len && sc_session_log) {
+            memcpy(copy, sc_session_log, len);
+        }
+        copy[len] = '\0';
+    }
+
+    SDL_AtomicUnlock(&sc_session_log_lock);
+    return copy;
 }

@@ -188,11 +188,11 @@ configure_file(configuration: conf, output: 'config.h')
 
 src_dir = include_directories('src')
 
-executable('scrcpy', src,
-           dependencies: dependencies,
-           include_directories: src_dir,
-           install: true,
-           c_args: [])
+scrcpy_app_target = executable('scrcpy', src,
+                               dependencies: dependencies,
+                               include_directories: src_dir,
+                               install: true,
+                               c_args: [])
 
 # <https://mesonbuild.com/Builtin-options.html#directories>
 datadir = get_option('datadir') # by default 'share'

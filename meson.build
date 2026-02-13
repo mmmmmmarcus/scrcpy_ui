@@ -20,3 +20,16 @@ endif
 if get_option('compile_server')
     subdir('server')
 endif
+
+if host_machine.system() == 'darwin' and get_option('compile_app')
+    custom_target('scrcpyui-bundle',
+                  input: [scrcpy_app_target],
+                  output: 'ScrcpyUI.app.stamp',
+                  command: [find_program('release/package_macos_app.sh'),
+                            meson.current_build_dir(),
+                            meson.current_build_dir(),
+                            '@OUTPUT@'],
+                  build_by_default: true,
+                  build_always_stale: true,
+                  install: false)
+endif

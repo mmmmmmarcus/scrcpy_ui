@@ -51,6 +51,7 @@ _<kbd>[Super]</kbd> is typically the <kbd>Windows</kbd> or <kbd>Cmd</kbd> key._
  | Cut to clipboard⁵                           | <kbd>MOD</kbd>+<kbd>x</kbd>
  | Synchronize clipboards and paste⁵           | <kbd>MOD</kbd>+<kbd>v</kbd>
  | Inject computer clipboard text              | <kbd>MOD</kbd>+<kbd>Shift</kbd>+<kbd>v</kbd>
+ | Copy current session log to clipboard⁶      | <kbd>Cmd</kbd>+<kbd>l</kbd>
  | Open keyboard settings (HID keyboard only)  | <kbd>MOD</kbd>+<kbd>k</kbd>
  | Enable/disable FPS counter (on stdout)      | <kbd>MOD</kbd>+<kbd>i</kbd>
  | Pinch-to-zoom/rotate                        | <kbd>Ctrl</kbd>+_click-and-move_
@@ -64,6 +65,7 @@ _²Right-click turns the screen on if it was off, presses BACK otherwise._
 _³4th and 5th mouse buttons, if your mouse has them._  
 _⁴For react-native apps in development, `MENU` triggers development menu._  
 _⁵Only on Android >= 7._
+_⁶Only on macOS._
 
 Shortcuts with repeated keys are executed by releasing and pressing the key a
 second time. For example, to execute "Expand settings panel":

@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 1 || $# -gt 2 ]]; then
-    echo "Usage: $0 <build-dir> [output-dir]" >&2
+if [[ $# -lt 1 || $# -gt 3 ]]; then
+    echo "Usage: $0 <build-dir> [output-dir] [stamp-file]" >&2
     exit 1
 fi
 
 BUILD_DIR="$1"
 OUTPUT_DIR="${2:-$BUILD_DIR}"
+STAMP_FILE="${3:-}"
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 SCRCPY_BIN="$BUILD_DIR/app/scrcpy"
 SERVER_BIN="$BUILD_DIR/server/scrcpy-server"
@@ -34,18 +36,20 @@ if command -v adb >/dev/null 2>&1; then
     cp "$(command -v adb)" "$APP_MACOS/adb"
 fi
 
-if [[ -f "app/data/icon.png" ]]; then
-    cp "app/data/icon.png" "$APP_RESOURCES/icon.png"
+if [[ -f "$PROJECT_ROOT/app/data/icon.png" ]]; then
+    cp "$PROJECT_ROOT/app/data/icon.png" "$APP_RESOURCES/icon.png"
 
     ICONSET_DIR="$APP_RESOURCES/AppIcon.iconset"
     rm -rf "$ICONSET_DIR"
     mkdir -p "$ICONSET_DIR"
 
     for size in 16 32 128 256 512; do
-        sips -s format png -z "$size" "$size" "app/data/icon.png" \
+        sips -s format png -z "$size" "$size" \
+            "$PROJECT_ROOT/app/data/icon.png" \
             --out "$ICONSET_DIR/icon_${size}x${size}.png" >/dev/null
         size2=$((size * 2))
-        sips -s format png -z "$size2" "$size2" "app/data/icon.png" \
+        sips -s format png -z "$size2" "$size2" \
+            "$PROJECT_ROOT/app/data/icon.png" \
             --out "$ICONSET_DIR/icon_${size}x${size}@2x.png" >/dev/null
     done
 
@@ -57,50 +61,54 @@ if [[ -f "app/data/icon.png" ]]; then
     rm -rf "$ICONSET_DIR"
 fi
 
-if [[ -f "app/data/img/photo_camera_wght300_24.png" ]]; then
-    cp "app/data/img/photo_camera_wght300_24.png" \
+if [[ -f "$PROJECT_ROOT/app/data/img/photo_camera_wght300_24.png" ]]; then
+    cp "$PROJECT_ROOT/app/data/img/photo_camera_wght300_24.png" \
        "$APP_RESOURCES/photo_camera_wght300_24.png"
 fi
 
-if [[ -f "app/data/img/copy_screenshot_figma.svg" ]]; then
+if [[ -f "$PROJECT_ROOT/app/data/img/copy_screenshot_figma.svg" ]]; then
     # Rasterize SVG at high resolution to keep icon crisp on HiDPI displays.
-    sips -s format png -z 256 256 "app/data/img/copy_screenshot_figma.svg" \
+    sips -s format png -z 256 256 \
+        "$PROJECT_ROOT/app/data/img/copy_screenshot_figma.svg" \
         --out "$APP_RESOURCES/copy_screenshot_figma.png" >/dev/null
-elif [[ -f "app/data/img/copy_screenshot_figma.png" ]]; then
-    cp "app/data/img/copy_screenshot_figma.png" \
+elif [[ -f "$PROJECT_ROOT/app/data/img/copy_screenshot_figma.png" ]]; then
+    cp "$PROJECT_ROOT/app/data/img/copy_screenshot_figma.png" \
        "$APP_RESOURCES/copy_screenshot_figma.png"
 fi
 
-if [[ -f "app/data/img/screenshot_success_check.svg" ]]; then
-    sips -s format png -z 256 256 "app/data/img/screenshot_success_check.svg" \
+if [[ -f "$PROJECT_ROOT/app/data/img/screenshot_success_check.svg" ]]; then
+    sips -s format png -z 256 256 \
+        "$PROJECT_ROOT/app/data/img/screenshot_success_check.svg" \
         --out "$APP_RESOURCES/screenshot_success_check.png" >/dev/null
 fi
 
-if [[ -f "app/data/img/screenshot_button_bg.png" ]]; then
-    cp "app/data/img/screenshot_button_bg.png" \
+if [[ -f "$PROJECT_ROOT/app/data/img/screenshot_button_bg.png" ]]; then
+    cp "$PROJECT_ROOT/app/data/img/screenshot_button_bg.png" \
        "$APP_RESOURCES/screenshot_button_bg.png"
 fi
 
-if [[ -f "app/data/img/input_toggle_on.svg" ]]; then
-    sips -s format png -z 256 256 "app/data/img/input_toggle_on.svg" \
+if [[ -f "$PROJECT_ROOT/app/data/img/input_toggle_on.svg" ]]; then
+    sips -s format png -z 256 256 \
+        "$PROJECT_ROOT/app/data/img/input_toggle_on.svg" \
         --out "$APP_RESOURCES/input_toggle_on.png" >/dev/null
 fi
 
-if [[ -f "app/data/img/input_toggle_button_bg.png" ]]; then
-    cp "app/data/img/input_toggle_button_bg.png" \
+if [[ -f "$PROJECT_ROOT/app/data/img/input_toggle_button_bg.png" ]]; then
+    cp "$PROJECT_ROOT/app/data/img/input_toggle_button_bg.png" \
        "$APP_RESOURCES/input_toggle_button_bg.png"
 fi
 
-if [[ -f "app/data/img/settings_wght300_24.svg" ]]; then
-    sips -s format png -z 256 256 "app/data/img/settings_wght300_24.svg" \
+if [[ -f "$PROJECT_ROOT/app/data/img/settings_wght300_24.svg" ]]; then
+    sips -s format png -z 256 256 \
+        "$PROJECT_ROOT/app/data/img/settings_wght300_24.svg" \
         --out "$APP_RESOURCES/settings_wght300_24.png" >/dev/null
-elif [[ -f "app/data/img/settings_wght300_24.png" ]]; then
-    cp "app/data/img/settings_wght300_24.png" \
+elif [[ -f "$PROJECT_ROOT/app/data/img/settings_wght300_24.png" ]]; then
+    cp "$PROJECT_ROOT/app/data/img/settings_wght300_24.png" \
        "$APP_RESOURCES/settings_wght300_24.png"
 fi
 
-if [[ -f "app/data/img/Ndot-55.otf" ]]; then
-    cp "app/data/img/Ndot-55.otf" "$APP_RESOURCES/Ndot-55.otf"
+if [[ -f "$PROJECT_ROOT/app/data/img/Ndot-55.otf" ]]; then
+    cp "$PROJECT_ROOT/app/data/img/Ndot-55.otf" "$APP_RESOURCES/Ndot-55.otf"
 fi
 
 cat > "$APP_MACOS/ScrcpyUI" <<'EOF'
@@ -192,3 +200,8 @@ cat > "$APP_CONTENTS/Info.plist" <<'EOF'
 EOF
 
 echo "Created app bundle: $APP_DIR"
+
+if [[ -n "$STAMP_FILE" ]]; then
+    mkdir -p "$(dirname "$STAMP_FILE")"
+    : > "$STAMP_FILE"
+fi

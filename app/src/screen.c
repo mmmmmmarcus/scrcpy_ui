@@ -2751,6 +2751,51 @@ sc_screen_is_copy_screenshot_shortcut(const SDL_Event *event) {
     return (mods & KMOD_GUI) || (mods & KMOD_CTRL);
 }
 
+static bool
+sc_screen_is_copy_log_shortcut(const SDL_Event *event) {
+    if (event->type != SDL_KEYDOWN || event->key.repeat) {
+        return false;
+    }
+
+    SDL_Keycode keycode = event->key.keysym.sym;
+    if (keycode != SDLK_l) {
+        return false;
+    }
+
+#ifdef __APPLE__
+    SDL_Keymod mods = event->key.keysym.mod;
+    return mods & KMOD_GUI;
+#else
+    return false;
+#endif
+}
+
+static bool
+sc_screen_copy_session_log_to_clipboard(void) {
+    char *log_text = sc_log_get_session_text();
+    if (!log_text) {
+        LOG_OOM();
+        return false;
+    }
+
+    if (!log_text[0]) {
+        LOGW("No session log to copy");
+        free(log_text);
+        return false;
+    }
+
+    if (SDL_SetClipboardText(log_text)) {
+        LOGW("Could not copy session log to clipboard: %s", SDL_GetError());
+        free(log_text);
+        return false;
+    }
+
+    LOGI("Session log copied to clipboard (%" SC_PRIsizet " bytes)",
+         strlen(log_text));
+    free(log_text);
+    return true;
+}
+
 bool
 sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
     switch (event->type) {
@@ -2838,6 +2883,11 @@ sc_screen_handle_event(struct sc_screen *screen, const SDL_Event *event) {
 
     if (screen->video && sc_screen_handle_panel_event(screen, event)) {
         // The side panel consumed the event.
+        return true;
+    }
+
+    if (sc_screen_is_copy_log_shortcut(event)) {
+        sc_screen_copy_session_log_to_clipboard();
         return true;
     }
 
